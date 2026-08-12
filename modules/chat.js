@@ -1365,7 +1365,7 @@ function smartEntryParameters() {
     properties: {
       userRequest: { type: 'string', description: '用户原始需求，用于判断条目类型与功能' },
       title: { type: 'string', description: '条目标题；不传则从 userRequest 推断' },
-      semanticType: { type: 'string', enum: ['character','location','organization','faction','event','rule','item','concept','relationship','style'], description: '语义类型，不确定可不传' },
+      semanticType: { type: 'string', enum: ['character','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '语义类型：character 人物 / location 具体地点 / geography 地理地貌 / organization 组织 / faction 阵营 / law 法律制度 / history 历史沿革 / economy 经济贸易 / magic 超凡体系(魔法科技) / culture 文化习俗信仰 / event 事件 / rule 通用规则 / item 物品 / concept 概念 / relationship 关系 / style 文风。不确定可不传' },
       customType: { type: 'string', description: 'AI 自定义分类，如“地下据点”“宫廷传闻”“禁术代价”“边境黑市”等' },
       functionType: { type: 'string', enum: ['keyword_trigger','constant_background','recursive_detail','voice_constraint','plot_hook','hidden_fact','conflict_fix'], description: '功能类型，不确定可不传' },
       classificationReason: { type: 'string', description: '简短说明为什么这样分类。展示给用户作为可审计理由，不要写隐藏思维链。' },

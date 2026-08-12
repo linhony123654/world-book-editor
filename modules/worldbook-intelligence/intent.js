@@ -8,12 +8,18 @@ function pickQuoted(text) {
 function inferTitle(text, semanticType) {
   const quoted = pickQuoted(text);
   if (quoted) return quoted;
-  const named = String(text || '').match(/叫([^，。,.\s]{2,20})/);
+  const named = String(text || '').match(/叫([^，。,。\s]{2,20})/);
   if (named) return named[1].trim();
   if (semanticType === 'rule') return '世界规则';
   if (semanticType === 'location') return '未命名地点';
   if (semanticType === 'character') return '未命名人物';
   if (semanticType === 'organization') return '未命名组织';
+  if (semanticType === 'law') return '未命名律法';
+  if (semanticType === 'history') return '历史沿革';
+  if (semanticType === 'geography') return '地理志';
+  if (semanticType === 'economy') return '经济体系';
+  if (semanticType === 'magic') return '超凡体系';
+  if (semanticType === 'culture') return '文化与习俗';
   return '未命名条目';
 }
 
