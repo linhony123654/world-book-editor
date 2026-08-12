@@ -504,7 +504,7 @@ export function initChat() {
   const $chatInput = $('chat-input');
   const $clear = $('chatClearBtn');
 
-  if ($btnSendChat) $btnSendChat.addEventListener('click', sendChat);
+  if ($btnSendChat) $btnSendChat.addEventListener('click', () => sendChat());
 
   // 滚动跟随 + 「回到底部」浮钮（滚动容器是 .app）
   const scroller = getChatScroller();
@@ -581,6 +581,35 @@ export function initChat() {
   if ($cancelDraft) $cancelDraft.addEventListener('click', discardActiveSmartDraft);
   const $draftModal = $('smartDraftModal');
   if ($draftModal) $draftModal.addEventListener('modal:closed', discardActiveSmartDraft);
+}
+
+// ===== 重新生成：删除最后一条 AI 回复，用同一条用户消息重发 =====
+function attachResendBtn(msgEl) {
+  if (!msgEl || msgEl.querySelector('.chat-resend')) return;
+  const btn = document.createElement('button');
+  btn.className = 'chat-resend';
+  btn.title = '重新生成';
+  btn.setAttribute('aria-label', '重新生成');
+  btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a9 9 0 0 1 15-6.7L21 8"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a9 9 0 0 1-15 6.7L3 16"/></svg><span>重新生成</span>';
+  btn.addEventListener('click', resendLast);
+  msgEl.appendChild(btn);
+}
+
+function resendLast() {
+  if (isSending) return;
+  const last = chatMessages[chatMessages.length - 1];
+  if (!last || last.role !== 'assistant') return;
+  chatMessages.pop();
+  saveChatHistory();
+  const bubbles = document.querySelectorAll('#chat-messages .chat-msg-assistant');
+  const lastEl = bubbles[bubbles.length - 1];
+  if (lastEl) lastEl.remove();
+  let userText = '';
+  for (let i = chatMessages.length - 1; i >= 0; i--) {
+    if (chatMessages[i].role === 'user') { userText = chatMessages[i].content; break; }
+  }
+  if (!userText) return;
+  sendChat(userText);
 }
 
 // ===== 流式 SSE 解析 =====
@@ -818,13 +847,15 @@ function setSendBusy(busy) {
 }
 
 // ===== sendChat =====
-async function sendChat() {
+async function sendChat(prevText) {
   if (isSending) return; // 防止重复发送
   const input = $('chat-input');
-  const text = input.value.trim();
+  const text = prevText != null ? prevText : (input ? input.value.trim() : '');
   if (!text) return;
-  input.value = '';
-  input.style.height = 'auto'; // 复位自动高度
+  if (prevText == null) {
+    input.value = '';
+    input.style.height = 'auto'; // 复位自动高度
+  }
 
   const apiUrl = localStorage.getItem('wbe-api-url');
   const apiKey = localStorage.getItem('wbe-api-key');
@@ -839,10 +870,12 @@ async function sendChat() {
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
   if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); logBookId = currentBookId; }
 
-  appendChatMessage('user', text);
-  chatMessages.push({ role: 'user', content: text });
-  trimHistory();
-  maybeGenerateTitle(); // 首条消息后异步生成 AI 标题（不阻塞对话）
+  if (prevText == null) {
+    appendChatMessage('user', text);
+    chatMessages.push({ role: 'user', content: text });
+    trimHistory();
+    maybeGenerateTitle(); // 首条消息后异步生成 AI 标题（不阻塞对话）
+  }
 
   const curBookName = ($('file-name') && $('file-name').textContent) || '未命名';
   let systemMsg = systemPrompt + '\n\n当前世界书:「' + curBookName + '」，共 ' + entries.length + ' 个条目。如需多步操作（如先搜索再修改），可以连续调用工具，系统会把每步结果返回给你。你也可以用 list_books / switch_book / create_book / rename_book / get_book_info 管理整本世界书。';
@@ -911,6 +944,7 @@ async function sendChat() {
         if (clean !== result.content) renderAssistantStream(msgEl, clean, result.reasoning, false);
         chatMessages.push({ role: 'assistant', content: clean });
         trimHistory();
+        attachResendBtn(msgEl); // 重新生成按钮
         // 分层记忆：记一条回合小总结，满阈值则后台整合大总结（不阻塞）
         pushTurnMemory({ user: text, trace: turnTrace, reply: clean });
         maybeRollup();
@@ -943,6 +977,7 @@ function appendChatMessage(role, text) {
   div.innerHTML = '<div class="chat-msg-role">' + ({user:'你',assistant:'AI',tool:'工具',error:'错误'}[role]||role) + '</div>' +
     '<div class="chat-msg-text">' + escHtml(text) + '</div>';
   container.appendChild(div);
+  if (role === 'assistant') attachResendBtn(div);
   applyChatVisibleLimit();
   // 自己发的消息和错误强制滚底；其余贴底才跟随
   if (role === 'user' || role === 'error' || isChatNearBottom()) scrollChatToBottom();

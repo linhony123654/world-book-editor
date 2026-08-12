@@ -22,7 +22,7 @@ app.use(express.static(path.join(__dirname), {
 }));
 
 // ===== SQLite =====
-const db = new Database(path.join(__dirname, 'world-books.db'));
+const db = new Database(process.env.WBE_DB || path.join(__dirname, 'world-books.db'));
 db.pragma('journal_mode = WAL');
 db.exec(`
   CREATE TABLE IF NOT EXISTS world_books (
