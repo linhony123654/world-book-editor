@@ -182,8 +182,8 @@ function renderSessionList() {
   }).join('');
 }
 
-function openSessionList() { renderSessionList(); const m = $('sessionModal'); if (m) m.classList.add('open'); }
-function closeSessionList() { const m = $('sessionModal'); if (m) m.classList.remove('open'); }
+function openSessionList() { renderSessionList(); setMemTab('sessions'); const m = $('memoryModal'); if (m) m.classList.add('open'); }
+function closeSessionList() { const m = $('memoryModal'); if (m) m.classList.remove('open'); }
 
 const WELCOME_HTML =
   '<div class="chat-welcome">' +
@@ -402,8 +402,21 @@ export function ensureMemoryLoaded() {
   }
 }
 
+function setMemTab(tab) {
+  document.querySelectorAll('#memoryModal .tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  const s = $('tab-sessions');
+  const m = $('tab-memory');
+  if (s) s.hidden = tab !== 'sessions';
+  if (m) m.hidden = tab !== 'memory';
+  if (tab === 'sessions') renderSessionList();
+  if (tab === 'memory') renderMemoryList();
+  const sheet = document.querySelector('#memoryModal .sheet');
+  if (sheet) sheet.scrollTop = 0;
+}
+
 function openMemoryModal() {
   ensureMemoryLoaded();
+  setMemTab('memory');
   renderMemoryList();
   const m = $('memoryModal');
   if (m) m.classList.add('open');
@@ -551,8 +564,10 @@ export function initChat() {
   if ($newSessionBtn) $newSessionBtn.addEventListener('click', newSession);
   const $sessionNewBtn = $('sessionNewBtn');
   if ($sessionNewBtn) $sessionNewBtn.addEventListener('click', newSession);
-  const $sessionModal = $('sessionModal');
+  const $sessionModal = $('memoryModal');
   if ($sessionModal) {
+    // 双标签：Sessions / Memory
+    $sessionModal.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => setMemTab(b.dataset.tab)));
     $sessionModal.addEventListener('click', (e) => {
       const del = e.target.closest('.session-del');
       if (del) { e.stopPropagation(); deleteSession(del.dataset.del); return; }

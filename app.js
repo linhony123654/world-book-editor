@@ -266,7 +266,7 @@ function bindModalClose() {
       closeModal(m);
     });
   });
-  ['entryModal', 'bookModal', 'apiModal', 'memoryModal', 'templateModal', 'smartDraftModal', 'sessionModal'].forEach(id => {
+  ['entryModal', 'bookModal', 'apiModal', 'memoryModal', 'templateModal', 'smartDraftModal'].forEach(id => {
     const m = $(id);
     if (m) m.addEventListener('click', e => { if (e.target === m) closeModal(m); });
   });

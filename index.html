@@ -303,13 +303,25 @@
   <div class="modal" id="memoryModal">
     <div class="sheet sheet-scroll">
       <div class="mini">Session memory</div>
-      <h3>AI 操作记忆</h3>
-      <p class="memory-note"><strong id="memBookName">本书</strong>的分层记忆：每个回合自动留一条小总结（做了什么 + 工具浓缩），每 10 回合 AI 把它们整合成一段「阶段总结」。整本注入到上下文，帮它记住前情、避免重复查询。按书持久化，刷新/换书都在；点「清空记忆」可重置（与「清空对话」相互独立）。</p>
-      <div class="memory-list" id="memoryList"></div>
-      <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
-        <button class="action" id="openTemplateBtn">模板</button>
-        <button class="action danger" id="clearMemoryBtn">清空记忆</button>
-        <button class="action primary" data-close-modal="memoryModal">关闭</button>
+      <h3 id="memModalTitle">对话与记忆</h3>
+      <div class="tabs">
+        <button class="tab active" data-tab="sessions">Sessions</button>
+        <button class="tab" data-tab="memory">Memory</button>
+      </div>
+      <div id="tab-sessions">
+        <div class="session-list" id="sessionList"></div>
+        <div class="sheet-actions">
+          <button class="action primary" id="sessionNewBtn">＋ 新建会话</button>
+        </div>
+      </div>
+      <div id="tab-memory" hidden>
+        <p class="memory-note"><strong id="memBookName">本书</strong>的分层记忆：每个回合自动留一条小总结（做了什么 + 工具浓缩），每 10 回合 AI 把它们整合成一段「阶段总结」。整本注入到上下文，帮它记住前情、避免重复查询。按书持久化，刷新/换书都在；点「清空记忆」可重置（与「清空对话」相互独立）。</p>
+        <div class="memory-list" id="memoryList"></div>
+        <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
+          <button class="action" id="openTemplateBtn">模板</button>
+          <button class="action danger" id="clearMemoryBtn">清空记忆</button>
+          <button class="action primary" data-close-modal="memoryModal">关闭</button>
+        </div>
       </div>
     </div>
   </div>
@@ -338,18 +350,6 @@
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr">
         <button class="action" id="cancelSmartDraftBtn">取消</button>
         <button class="action primary" id="commitSmartDraftBtn">确认创建</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 会话列表 -->
-  <div class="modal" id="sessionModal">
-    <div class="sheet sheet-scroll">
-      <div class="mini">Sessions</div>
-      <h3>对话会话</h3>
-      <div class="session-list" id="sessionList"></div>
-      <div class="sheet-actions">
-        <button class="action primary" id="sessionNewBtn">＋ 新建会话</button>
       </div>
     </div>
   </div>
