@@ -397,6 +397,19 @@
     </div>
   </div>
 
+  <!-- 破限预设 -->
+  <div class="modal" id="jbModal">
+    <div class="sheet sheet-scroll">
+      <div class="mini">Freedom presets</div>
+      <h3>破限预设</h3>
+      <p class="memory-note">选择一档模板，会<strong>追加到系统提示词末尾</strong>（可编辑、可删除）。效果因模型而异：本地/开源模型明显，Claude/GPT 效果递减。不含未成年相关内容。</p>
+      <div class="jb-preset-list" id="jbPresetList"></div>
+      <div class="sheet-actions">
+        <button class="action" data-close-modal="jbModal">取消</button>
+      </div>
+    </div>
+  </div>
+
   <!-- API 配置 -->
   <div class="modal" id="apiModal">
     <div class="sheet sheet-scroll">
@@ -431,7 +444,10 @@
       </div>
       <div class="field">
         <label>系统提示词</label>
-        <textarea id="apiPromptInput" rows="4" placeholder="你是一个世界书编辑助手…"></textarea>
+        <div class="model-row">
+          <textarea id="apiPromptInput" rows="4" placeholder="你是一个世界书编辑助手…"></textarea>
+          <button class="action" id="jbPresetBtn" style="width:74px;height:40px;align-self:flex-start;">破限预设</button>
+        </div>
       </div>
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
         <button class="action danger" id="deleteProfileBtn">删除</button>
