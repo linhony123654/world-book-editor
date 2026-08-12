@@ -162,25 +162,74 @@ function bindSettings() {
   $('exportBtn') && $('exportBtn').addEventListener('click', exportFile);
 
   // ===== 配置秘钥：换浏览器/设备时一键复制与导入 =====
-  function buildConfigKey() {
-    const payload = { p: getProfiles(), a: activeProfileId(), v: 1 };
-    return 'wbe:' + btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  // 安全说明：base64 只是编码，任何人都能解开。这里用 Web Crypto 做
+  // PBKDF2(20万次迭代) + AES-GCM 密码加密，无密码无法解密。
+  // 格式：wbe1:<salt b64>:<iv b64>:<ciphertext b64>；旧版 wbe:<json b64> 仍可导入。
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+  async function deriveKey(password, salt) {
+    const material = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' },
+      material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
   }
+
+  async function encryptConfigKey(payloadJson, password) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveKey(password, salt);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(payloadJson));
+    return 'wbe1:' + toB64(salt) + ':' + toB64(iv) + ':' + toB64(ct);
+  }
+
+  async function decryptConfigKey(keyStr, password) {
+    const parts = keyStr.split(':');
+    if (parts.length !== 4 || parts[0] !== 'wbe1') throw new Error('bad key');
+    const key = await deriveKey(password, fromB64(parts[1]));
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(parts[2]) }, key, fromB64(parts[3]));
+    return dec.decode(pt);
+  }
+
+  function buildConfigKey() {
+    return JSON.stringify({ p: loadProfiles(), a: activeProfileId(), v: 1 });
+  }
+
   $('copyConfigKeyBtn') && $('copyConfigKeyBtn').addEventListener('click', async () => {
-    const key = buildConfigKey();
+    const password = prompt('设置秘钥密码（导入时需要输入同一密码；建议 ≥6 位）');
+    if (password === null) return; // 取消
+    if (!password.trim()) return showToast('密码不能为空', 'error');
+    const payloadJson = buildConfigKey();
     try {
-      await navigator.clipboard.writeText(key);
-      showToast('秘钥已复制，可在其他浏览器粘贴导入', 'success');
-    } catch {
-      prompt('复制失败，请手动复制以下秘钥：', key);
+      const key = await encryptConfigKey(payloadJson, password);
+      try {
+        await navigator.clipboard.writeText(key);
+        showToast('已加密并复制，导入时输入同一密码即可', 'success');
+      } catch {
+        prompt('复制失败，请手动复制以下秘钥：', key);
+      }
+    } catch (e) {
+      showToast('加密失败: ' + e.message, 'error');
     }
   });
-  $('importConfigKeyBtn') && $('importConfigKeyBtn').addEventListener('click', () => {
+  $('importConfigKeyBtn') && $('importConfigKeyBtn').addEventListener('click', async () => {
     const raw = ($('configKeyInput') && $('configKeyInput').value || '').trim();
     if (!raw) return showToast('请先粘贴秘钥', 'error');
     try {
-      const text = raw.startsWith('wbe:') ? raw.slice(4) : raw;
-      const payload = JSON.parse(decodeURIComponent(escape(atob(text.trim()))));
+      let payloadJson;
+      if (raw.startsWith('wbe1:')) {
+        const password = prompt('输入秘钥密码');
+        if (password === null) return;
+        payloadJson = await decryptConfigKey(raw, password);
+      } else {
+        // 旧版明文秘钥兼容
+        const text = raw.startsWith('wbe:') ? raw.slice(4) : raw;
+        payloadJson = decodeURIComponent(escape(atob(text.trim())));
+      }
+      const payload = JSON.parse(payloadJson);
       if (!payload || !Array.isArray(payload.p)) throw new Error('bad key');
       const valid = payload.p.filter(p => p && p.id && p.url);
       if (!valid.length) throw new Error('no profiles');
@@ -194,8 +243,8 @@ function bindSettings() {
       }
       refreshSettings();
       showToast('已导入 ' + valid.length + ' 个接口配置', 'success');
-    } catch {
-      showToast('秘钥无效，请检查后重试', 'error');
+    } catch (e) {
+      showToast('秘钥无效或密码错误', 'error');
     }
   });
 
