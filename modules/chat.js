@@ -26,7 +26,7 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
-const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
+const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','web_search','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
 const smartDraftState = createSmartDraftState();
 
 // ===== 分层记忆：回合小总结 + AI 大总结，按世界书持久化 =====
@@ -1321,6 +1321,21 @@ function getTools() {
     {
       type: 'function',
       function: {
+        name: 'web_search',
+        description: '联网搜索现实资料（历史、地理、文化、法律等），供创作设定时参考。搜索结果可能不准，需甄别后使用；适合查真实世界知识，不适合查世界书内部内容。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '搜索词，如“唐朝宵禁制度”' },
+            limit: { type: 'integer', minimum: 1, maximum: 5, description: '返回条数，默认 3' }
+          },
+          required: ['query']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'undo_last',
         description: '撤销对世界书的修改（新增/删除/编辑/批量/复制等），恢复到操作前的状态；steps 大于 1 时一次回退多步',
         parameters: {
@@ -1612,6 +1627,7 @@ async function executeTool(name, args) {
     case 'check_entries': return toolCheckEntries();
     case 'test_triggers': return toolTestTriggers(args || {});
     case 'export_book': return toolExportBook();
+    case 'web_search': return await toolWebSearch(args || {});
     case 'undo_last': return toolUndo(args);
     case 'get_book_info': return toolBookInfo();
     case 'list_books': return await toolListBooks();
@@ -2286,6 +2302,26 @@ function toolExportBook() {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
   return { summary: '已导出「' + name + '」(' + getAllEntries().length + ' 条)', detail: 'JSON 文件已开始下载，可直接导入 SillyTavern。' };
+}
+
+// ===== 联网搜索 =====
+async function toolWebSearch({ query, limit }) {
+  const q = String(query || '').trim();
+  if (!q) return { summary: '缺少搜索词', detail: '请提供要搜索的内容' };
+  const { authHeaders } = await import('./auth.js');
+  const resp = await fetch('/api/proxy/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ q })
+  });
+  if (!resp.ok) throw new Error('搜索接口 HTTP ' + resp.status);
+  const data = await resp.json();
+  const list = (data.results || []).slice(0, Math.max(1, Math.min(parseInt(limit, 10) || 3, 5)));
+  if (!list.length) return { summary: '搜索无结果', detail: '「' + q + '」没有找到结果，可换关键词重试' };
+  const lines = list.map((r, i) =>
+    (i + 1) + '. ' + r.title + '\n   ' + r.url + '\n   ' + (r.snippet || '(无摘要)')
+  );
+  return { summary: '搜索到 ' + list.length + ' 条（' + q + '）', detail: lines.join('\n\n') };
 }
 
 function toolUndo(args) {

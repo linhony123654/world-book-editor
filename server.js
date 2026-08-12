@@ -127,6 +127,42 @@ app.post('/api/change-password', authRequired, (req, res) => {
   res.json({ ok: true, message: '密码已修改，请重新登录' });
 });
 
+// ===== 网络搜索代理：DuckDuckGo HTML（免费无 key），结果回填给 AI =====
+function decodeDdgUrl(href) {
+  try {
+    const m = String(href).match(/uddg=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : href;
+  } catch { return href; }
+}
+
+function parseDdgResults(html) {
+  const results = [];
+  // DDG HTML 结果条目：result__a（标题+链接）与 result__snippet（摘要）成对出现
+  const re = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
+  let m;
+  while ((m = re.exec(html)) !== null && results.length < 8) {
+    const title = String(m[2] || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').trim();
+    const snippet = String(m[3] || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').trim();
+    if (title) results.push({ title, url: decodeDdgUrl(m[1]), snippet });
+  }
+  return results;
+}
+
+app.post('/api/proxy/search', authRequired, async (req, res) => {
+  const q = String((req.body || {}).q || '').trim();
+  if (!q || q.length > 200) return res.status(400).json({ error: '缺少搜索词' });
+  try {
+    const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q), {
+      headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' }
+    });
+    const html = await r.text();
+    const results = parseDdgResults(html);
+    res.json({ query: q, results, source: 'duckduckgo' });
+  } catch (e) {
+    res.status(502).json({ error: '搜索失败: ' + e.message });
+  }
+});
+
 // 数据 API 全部需要登录
 app.use(['/api/books', '/api/proxy', '/api/test-tool'], authRequired);
 
