@@ -109,7 +109,6 @@ function saveChatHistory() {
     }
     localStorage.setItem(sessionsKey(logBookId), JSON.stringify(sessions));
     localStorage.setItem(activeKey(logBookId), activeSessionId || '');
-    renderSessionBar();
   } catch {}
 }
 
@@ -153,14 +152,6 @@ function deleteSession(id) {
   renderSessionList();
 }
 
-function renderSessionBar() {
-  const el = $('sessionTitle');
-  if (el) {
-    const s = sessions.find(x => x.id === activeSessionId);
-    el.textContent = (s && s.title) ? s.title : '新对话';
-  }
-}
-
 function renderSessionList() {
   const listEl = $('sessionList');
   if (!listEl) return;
@@ -182,7 +173,6 @@ function renderSessionList() {
   }).join('');
 }
 
-function openSessionList() { renderSessionList(); setMemTab('sessions'); const m = $('memoryModal'); if (m) m.classList.add('open'); }
 function closeSessionList() { const m = $('memoryModal'); if (m) m.classList.remove('open'); }
 
 const WELCOME_HTML =
@@ -397,12 +387,14 @@ export function ensureMemoryLoaded() {
     loadMemory(currentBookId);
     loadChatHistory(currentBookId);
     renderChatHistory();
-    renderSessionBar();
     logBookId = currentBookId;
   }
 }
 
+let memTabState = 'sessions'; // 弹窗默认打开会话标签（会话栏已移除，这里是主入口）
+
 function setMemTab(tab) {
+  memTabState = tab;
   document.querySelectorAll('#memoryModal .tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   const s = $('tab-sessions');
   const m = $('tab-memory');
@@ -416,8 +408,7 @@ function setMemTab(tab) {
 
 function openMemoryModal() {
   ensureMemoryLoaded();
-  setMemTab('memory');
-  renderMemoryList();
+  setMemTab(memTabState);
   const m = $('memoryModal');
   if (m) m.classList.add('open');
 }
@@ -555,13 +546,8 @@ export function initChat() {
   // 启动时恢复当前书的对话历史（刷新/重开后继续）
   loadChatHistory(currentBookId);
   renderChatHistory();
-  renderSessionBar();
 
-  // 多会话：会话栏 + 会话列表
-  const $sessionListBtn = $('sessionListBtn');
-  if ($sessionListBtn) $sessionListBtn.addEventListener('click', openSessionList);
-  const $newSessionBtn = $('newSessionBtn');
-  if ($newSessionBtn) $newSessionBtn.addEventListener('click', newSession);
+  // 多会话：记忆弹窗 Sessions 标签（会话栏已移除，入口为右上角记忆按钮）
   const $sessionNewBtn = $('sessionNewBtn');
   if ($sessionNewBtn) $sessionNewBtn.addEventListener('click', newSession);
   const $sessionModal = $('memoryModal');
@@ -848,7 +834,7 @@ async function sendChat() {
   }
 
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
-  if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); renderSessionBar(); logBookId = currentBookId; }
+  if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); logBookId = currentBookId; }
 
   appendChatMessage('user', text);
   chatMessages.push({ role: 'user', content: text });
