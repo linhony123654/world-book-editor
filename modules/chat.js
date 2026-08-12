@@ -59,7 +59,7 @@ let sessions = [];          // 当前书的会话列表
 let activeSessionId = null; // 活动会话 id
 
 function makeSession() {
-  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now(), aiTitled: false };
 }
 
 function titleFromMessages(msgs) {
@@ -105,7 +105,7 @@ function saveChatHistory() {
     if (cur) {
       cur.messages = chatMessages.slice();
       cur.updatedAt = Date.now();
-      if (!cur.title || cur.title === '新对话') cur.title = titleFromMessages(chatMessages);
+      if (!cur.aiTitled && (!cur.title || cur.title === '新对话')) cur.title = titleFromMessages(chatMessages);
     }
     localStorage.setItem(sessionsKey(logBookId), JSON.stringify(sessions));
     localStorage.setItem(activeKey(logBookId), activeSessionId || '');
@@ -297,6 +297,36 @@ async function fetchCompletion(messages) {
     if (delta?.content) content += delta.content;
   }
   return content.trim();
+}
+
+// ===== AI 会话标题：首条消息后异步生成，失败回退截取法 =====
+let titleGenerating = false;
+
+async function maybeGenerateTitle() {
+  const cur = sessions.find(s => s.id === activeSessionId);
+  if (!cur || cur.aiTitled || titleGenerating) return;
+  const first = chatMessages.find(m => m.role === 'user');
+  if (!first) return;
+  titleGenerating = true;
+  try {
+    const text = await fetchCompletion([
+      { role: 'system', content: '你是标题生成器。根据对话开头概括一个简洁的对话标题：不超过 10 个汉字，不要标点，不要引号，不要解释，直接输出标题。' },
+      { role: 'user', content: '对话开头：' + String(first.content || '').slice(0, 200) }
+    ]);
+    const t = (text || '').replace(/["'「」『』【】]/g, '').trim();
+    if (t && t.length <= 20) {
+      const s = sessions.find(x => x.id === activeSessionId);
+      if (s && !s.aiTitled) {
+        s.title = t;
+        s.aiTitled = true;
+        saveChatHistory();
+      }
+    }
+  } catch (e) {
+    console.warn('[WBE] 标题生成失败，保留截取标题:', e.message);
+  } finally {
+    titleGenerating = false;
+  }
 }
 
 async function maybeRollup() {
@@ -808,6 +838,7 @@ async function sendChat() {
   appendChatMessage('user', text);
   chatMessages.push({ role: 'user', content: text });
   trimHistory();
+  maybeGenerateTitle(); // 首条消息后异步生成 AI 标题（不阻塞对话）
 
   const curBookName = ($('file-name') && $('file-name').textContent) || '未命名';
   let systemMsg = systemPrompt + '\n\n当前世界书:「' + curBookName + '」，共 ' + entries.length + ' 个条目。如需多步操作（如先搜索再修改），可以连续调用工具，系统会把每步结果返回给你。你也可以用 list_books / switch_book / create_book / rename_book / get_book_info 管理整本世界书。';
