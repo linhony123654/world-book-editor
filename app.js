@@ -320,6 +320,26 @@ function bindJbPresets() {
   const modal = $('jbModal');
   const list = $('jbPresetList');
   if (!btn || !modal || !list) return;
+  let lastJbText = '';
+
+  function savePromptToProfile(prompt) {
+    const arr = loadProfiles();
+    let id = editingProfileId;
+    const existing = id ? arr.find(x => x.id === id) : null;
+    if (existing) {
+      existing.prompt = prompt;
+      saveProfiles(arr);
+      setActiveProfile(id);
+      return true;
+    }
+    return false;
+  }
+
+  function setUndoVisible(visible) {
+    const row = $('jbUndoRow');
+    if (row) row.hidden = !visible;
+  }
+
   btn.addEventListener('click', () => {
     list.innerHTML = JB_PRESETS.map((p, i) =>
       '<div class="jb-preset" data-jb="' + i + '">' +
@@ -337,19 +357,25 @@ function bindJbPresets() {
     const ta = $('apiPromptInput');
     if (!ta) return;
     ta.value = (ta.value || '').trim() + p.text;
+    lastJbText = p.text;
     modal.classList.remove('open');
-    // 自动保存到当前正在编辑的档案（避免用户忘记点保存按钮）
-    const arr = loadProfiles();
-    let id = editingProfileId;
-    const existing = id ? arr.find(x => x.id === id) : null;
-    if (existing) {
-      existing.prompt = ta.value.trim();
-      saveProfiles(arr);
-      setActiveProfile(id);
-      showToast('已追加「' + p.name + '」并保存', 'success');
-    } else {
-      showToast('已追加「' + p.name + '」，点保存生效', 'success');
+    const saved = savePromptToProfile(ta.value.trim());
+    setUndoVisible(true);
+    showToast('已加入「' + p.name + '」' + (saved ? '，可撤销' : '，保存后生效'), 'success');
+  });
+  const undoBtn = $('jbUndoBtn');
+  if (undoBtn) undoBtn.addEventListener('click', () => {
+    const ta = $('apiPromptInput');
+    if (!ta || !lastJbText) return;
+    const idx = ta.value.lastIndexOf(lastJbText);
+    if (idx < 0) {
+      showToast('未找到上次追加的模板（可能已手动修改），请手动删除', 'error');
+      return;
     }
+    ta.value = (ta.value.slice(0, idx) + ta.value.slice(idx + lastJbText.length)).replace(/\n{3,}$/, '\n').trim();
+    const saved = savePromptToProfile(ta.value);
+    setUndoVisible(false);
+    showToast('已撤销破限模板' + (saved ? '并保存' : ''), 'success');
   });
 }
 

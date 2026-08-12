@@ -536,6 +536,14 @@ svg { display: block; }
 .jb-preset:hover { border-color: var(--wine); background: var(--wine-soft); }
 .jb-preset strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 14px; font-weight: 400; }
 .jb-preset small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.jb-undo-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding: 8px 12px;
+  border: 1px solid var(--forest); border-radius: 8px;
+  background: var(--forest-soft);
+}
+.jb-undo-tip { color: var(--forest); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.jb-undo-row .action { width: auto; padding: 5px 12px; min-height: 0; height: auto; font-size: 10px; }
 
 /* ===== 登录 / 首次设置 ===== */
 .app.auth-hidden .bottom-nav { display: none; }
