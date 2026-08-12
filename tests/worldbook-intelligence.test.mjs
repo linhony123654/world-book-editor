@@ -59,9 +59,10 @@ test('uses writing template reference when no explicit template sections are sup
     entries: existingEntries
   });
 
-  assert.match(draft.content, /入口伪装：/);
-  assert.match(draft.content, /服务对象：/);
-  assert.match(draft.content, /隐藏风险：/);
+  // 无正文时，请求原文作为首段；缺失段落留空，不生成指令性占位
+  assert.match(draft.content, /入口伪装：写一个下城区秘密诊所/);
+  assert.ok(!draft.content.includes('服务对象：'));
+  assert.ok(!draft.content.includes('需要写成'));
   assert.deepEqual(draft.templateSections, ['入口伪装', '服务对象', '隐藏风险']);
 });
 
@@ -108,8 +109,10 @@ test('accepts AI supplied custom classification and template sections', () => {
   assert.equal(draft.classificationReason, '它既是地点，也是剧情触发场景，重点是秘密服务与阶层矛盾。');
   assert.equal(draft.fields.position, 4);
   assert.equal(draft.fields.depth, 3);
-  assert.ok(draft.content.includes('入口伪装'));
-  assert.ok(draft.content.includes('隐藏风险'));
+  // 无正文时请求原文作为首段，缺失段落留空，不生成指令性占位
+  assert.ok(draft.content.includes('入口伪装：'));
+  assert.ok(!draft.content.includes('隐藏风险：'));
+  assert.ok(!draft.content.includes('需要写成'));
 });
 
 test('uses AI decision matrix hints when supplied', () => {

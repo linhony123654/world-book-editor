@@ -6,6 +6,7 @@ import { renderEditor, renderEditorEmpty } from './editor.js';
 import { scheduleSave, apiRequest, loadBookList, loadBook, createBook, renameBook, deleteBook } from './api.js';
 import { summarizeToolTraceForMemory } from './memory-summary.js';
 import { planWorldbookEntry } from './worldbook-intelligence/index.js';
+import { TEMPLATES } from './worldbook-intelligence/templates.js';
 import { extractReasoningDelta, hasVisibleAssistantStream, reasoningDetailsShouldBeOpen, shouldCollapseReasoningAfterStream } from './reasoning.js';
 import { applyVisibleLimitToChildren, readChatVisibleLimit } from './chat-view.js';
 import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows, formatDecision } from './smart-draft.js';
@@ -20,7 +21,7 @@ const MAX_HISTORY = 40;
 // 默认系统提示（设置框占位 + 未配置时兜底都用它）
 export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据用户指令调用工具完成操作：' +
   '条目级——搜索/查看/新增(单条 add_entry、多条 add_entries)/编辑/批量修改/删除(单条 delete_entry、批量 delete_entries)/启用禁用/排序/复制/撤销；' +
-  '智能写作——当用户要求创建人物、地点、组织、规则、事件、物品、关系、文风等设定条目时，复杂条目优先用 plan_smart_entry 生成预览，由用户确认后写入；用户明确要求直接创建时才用 create_smart_entry。你可以根据本书气质自由给出 customType、classificationReason、templateSections 和设置判断矩阵；' +
+  '智能写作——当用户要求创建人物、地点、组织、规则、事件、物品、关系、文风等设定条目时，复杂条目优先用 plan_smart_entry 生成预览，由用户确认后写入；用户明确要求直接创建时才用 create_smart_entry。content 必须写完整正文：按「段落名：内容」逐段写完所有段落，每段要有具体可用的设定细节，严禁输出“需要写成…”“围绕…补充”“可直接进入对话上下文”等指令性占位文字。你可以根据本书气质自由给出 customType、classificationReason、templateSections 和设置判断矩阵；' +
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
@@ -1618,18 +1619,50 @@ function toolAddMany({ entries: items }) {
   return { summary: '已新增 ' + created.length + ' 条 (UID ' + uidStr + ')', detail: '新条目 UID: ' + created.join(', ') };
 }
 
-function toolCreateSmartEntry(args) {
+async function toolCreateSmartEntry(args) {
   const draft = planWorldbookEntry(withWritingTemplate(args));
-  return commitSmartDraft(draft);
+  const completed = await maybeCompleteSmartContent(draft, args);
+  return commitSmartDraft(completed);
 }
 
-function toolPlanSmartEntry(args) {
+async function toolPlanSmartEntry(args) {
   const draft = planWorldbookEntry(withWritingTemplate(args));
-  const record = createSmartDraftRecord(draft);
+  const completed = await maybeCompleteSmartContent(draft, args);
+  const record = createSmartDraftRecord(completed);
   setActiveSmartDraft(smartDraftState, record);
   renderSmartDraftModal(record);
-  const detail = smartDraftDetail(draft, null);
-  return { summary: '已生成智能条目预览「' + draft.title + '」', detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消。' };
+  const detail = smartDraftDetail(completed, null);
+  return { summary: '已生成智能条目预览「' + completed.title + '」', detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消。' };
+}
+
+// 检测正文是否不完整（指令性占位/段落缺失/过短），命中则让模型补全为完整正文
+const PLACEHOLDER_RE = /需要写成|需要.*(?:设定|补充|描写)|围绕[^。]{0,12}补充|可直接进入对话上下文/;
+
+async function maybeCompleteSmartContent(draft, args) {
+  const content = String(draft.content || '').trim();
+  const sections = Array.isArray(draft.templateSections) && draft.templateSections.length
+    ? draft.templateSections
+    : (TEMPLATES[draft.semanticType] || null);
+  const covered = sections ? sections.filter(s => content.includes(s)).length : 0;
+  const incomplete =
+    PLACEHOLDER_RE.test(content) ||
+    content.length < 30 ||
+    (sections && covered < Math.min(3, sections.length));
+  if (!incomplete) return draft;
+  try {
+    const text = await fetchCompletion([
+      { role: 'system', content: '你是世界书设定写手。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节、可触发；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
+      { role: 'user', content: '条目主题：' + (draft.title || '') +
+        '\n段落模板：' + (sections ? sections.join('、') : '（按内容自然分段）') +
+        '\n现有内容：\n' + (content || '（无）') }
+    ]);
+    if (text && text.length > content.length * 0.6) {
+      draft.content = text;
+    }
+  } catch (e) {
+    console.warn('[WBE] 正文补全失败，保留原草稿:', e.message);
+  }
+  return draft;
 }
 
 function toolGetWritingTemplate(args) {

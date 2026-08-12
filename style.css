@@ -147,7 +147,7 @@ svg { display: block; }
 .cover-title {
   margin: 13px 0 0;
   font-family: Georgia, "Times New Roman", "Songti SC", serif;
-  font-size: clamp(45px, 13.8vw, 59px);
+  font-size: clamp(36px, 11vw, 48px);
   line-height: .92; letter-spacing: -.062em;
   color: var(--ink); white-space: nowrap; overflow: hidden;
 }
@@ -566,7 +566,7 @@ svg { display: block; }
 .toast.toast-success { background: var(--forest); border-color: var(--forest); }
 
 @media (max-width: 370px) {
-  .cover-title { font-size: 43px; letter-spacing: -.07em; }
+  .cover-title { font-size: 35px; letter-spacing: -.07em; }
   .cover-deck { grid-template-columns: minmax(0, 1fr) 72px; }
   .cover-deck p { font-size: 11px; }
   .nav span { font-size: 7px; letter-spacing: 0; }

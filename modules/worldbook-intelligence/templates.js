@@ -1,4 +1,4 @@
-const TEMPLATES = {
+export const TEMPLATES = {
   character: ['身份', '外貌/气质', '性格', '能力/资源', '关系', '说话方式', '剧情钩子', '限制'],
   location: ['位置与功能', '视觉印象', '居民/势力', '重要地点', '危险与规则', '可触发剧情', '与其他地点的关系'],
   organization: ['公开身份', '真实目标', '组织结构', '资源与势力范围', '成员风格', '与其他势力关系', '弱点'],
@@ -50,10 +50,13 @@ export function buildTemplateReferencedContent(templateText, seedContent, type) 
 }
 
 function fillSections(sections, body, type, hints = {}) {
-  return sections.map((section, index) => {
+  const out = [];
+  for (let index = 0; index < sections.length; index++) {
+    const section = sections[index];
     const text = extractSectionHint(section, body) || fallbackSectionText(section, body, type, index, hints[section]);
-    return section + '：' + text;
-  });
+    if (text) out.push(section + '：' + text);
+  }
+  return out;
 }
 
 function parseTemplateHints(templateText) {
@@ -84,44 +87,12 @@ function extractSectionHint(section, body) {
 }
 
 function fallbackSectionText(section, body, type, index, templateHint) {
+  // 无段落结构时，AI 原文作为首段；其余缺失段落留空，由 AI 补全流程填充，
+  // 避免把指令性占位（如「需要写成…」）写进条目
   if (index === 0 && body) return body;
-  const subject = summarizeSeed(body) || '该条目';
-  const hint = templateHint || sectionHints[section] || typeHints[type] || '围绕当前设定补充可触发、可执行的细节';
-  return subject + '的' + section + '需要写成可直接进入对话上下文的设定：' + hint + '。';
-}
-
-function summarizeSeed(body) {
-  if (!body) return '';
-  return body
-    .replace(/^请?帮?我?(?:写|新增|创建|补充|设计|生成)一个?/, '')
-    .replace(/[。；;\n].*$/, '')
-    .trim()
-    .slice(0, 36);
+  return '';
 }
 
 function escapeRegExp(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-
-const typeHints = {
-  character: '包含身份、动机、资源、限制和与主线的关系',
-  location: '包含可感知的环境、势力痕迹、进入条件和剧情用途',
-  organization: '包含公开身份、真实目标、资源边界和弱点',
-  event: '包含起因、关键变化、后果和后续钩子',
-  rule: '包含适用范围、限制、代价和例外',
-  item: '包含来源、功能、限制和持有关系',
-  relationship: '包含双方表面关系、真实矛盾和变化触发点',
-  style: '包含表达倾向、禁止事项和稳定口吻约束',
-  concept: '包含定义、表现、使用场景和限制'
-};
-
-const sectionHints = {
-  '入口伪装': '说明入口如何隐藏、谁能识别、误入者会看到什么',
-  '内部气味与陈设': '写出能被角色感知的气味、光线、摆设和压迫感',
-  '服务对象': '列出主要服务人群、他们为什么来、会付出什么代价',
-  '交易规则': '说明交换条件、禁忌、违约后果和默认规矩',
-  '隐藏风险': '写清会引爆冲突的追查者、证据、内鬼或时间限制',
-  '剧情钩子': '给出能推动角色行动的线索、请求、威胁或选择',
-  '可触发剧情': '给出进入场景后容易发生的事件和冲突',
-  '与其他地点的关系': '说明交通、势力、传闻或资源上的连接'
-};
