@@ -26,7 +26,7 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
-const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
+const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
 const smartDraftState = createSmartDraftState();
 
 // ===== 分层记忆：回合小总结 + AI 大总结，按世界书持久化 =====
@@ -1225,6 +1225,66 @@ function getTools() {
     {
       type: 'function',
       function: {
+        name: 'merge_entries',
+        description: '把两条或多条条目合并为一条：正文拼接、关键词取并集，其他字段取第一条的。用于清理重复设定。',
+        parameters: {
+          type: 'object',
+          properties: {
+            uids: { type: 'array', items: { type: 'number' }, description: '要合并的条目 UID 数组（2 条以上，至少 2 条）' },
+            keep: { type: 'number', description: '保留哪个 UID（默认保留第一个），其余条目删除' }
+          },
+          required: ['uids']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'split_entry',
+        description: '把一条大条目拆分成多条独立条目（如把大人物卡拆成设定+剧情钩子两条）。parts 至少 2 个。',
+        parameters: {
+          type: 'object',
+          properties: {
+            uid: { type: 'number', description: '要拆分的条目 UID' },
+            parts: { type: 'array', items: { type: 'object', properties: { comment: { type: 'string', description: '新条目标题' }, content: { type: 'string', description: '新条目正文' } }, required: ['comment','content'] }, description: '拆分后的条目列表（至少 2 个），原条目被删除' }
+          },
+          required: ['uid', 'parts']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'check_entries',
+        description: '全书体检：检查永不触发（无关键词且非常驻）、关键词过短/重复冲突、空正文、标题重复等质量问题。返回问题清单。',
+        parameters: { type: 'object', properties: {} }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'test_triggers',
+        description: '触发预演：给一段场景文本，模拟 SillyTavern 世界书触发逻辑，返回会命中哪些条目（常驻恒命中、关键词子串匹配），按注入顺序排列。检查世界书是否按预期工作。',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: '要测试的场景文本（如一段角色对话或场景描述）' }
+          },
+          required: ['text']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'export_book',
+        description: '把当前世界书导出为 SillyTavern 兼容 JSON 文件并触发下载。',
+        parameters: { type: 'object', properties: {} }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'undo_last',
         description: '撤销对世界书的修改（新增/删除/编辑/批量/复制等），恢复到操作前的状态；steps 大于 1 时一次回退多步',
         parameters: {
@@ -1511,6 +1571,11 @@ async function executeTool(name, args) {
     case 'toggle_entry': return toolToggle(args);
     case 'reorder_entry': return toolReorder(args);
     case 'duplicate_entry': return toolDuplicate(args);
+    case 'merge_entries': return toolMergeEntries(args || {});
+    case 'split_entry': return toolSplitEntry(args || {});
+    case 'check_entries': return toolCheckEntries();
+    case 'test_triggers': return toolTestTriggers(args || {});
+    case 'export_book': return toolExportBook();
     case 'undo_last': return toolUndo(args);
     case 'get_book_info': return toolBookInfo();
     case 'list_books': return await toolListBooks();
@@ -2034,6 +2099,157 @@ function toolDuplicate({ uid }) {
   renderSidebar();
   scheduleSave();
   return { summary: '已复制 #' + uid + ' → #' + newUid, detail: '新副本 UID: ' + newUid + '（标题: ' + copy.comment + '）' };
+}
+
+// ===== 合并条目 =====
+function toolMergeEntries({ uids, keep }) {
+  const list = getAllEntries();
+  const targets = (Array.isArray(uids) ? uids : []).map(u => list.find(e => e.uid === u)).filter(Boolean);
+  if (targets.length < 2) return { summary: '合并失败', detail: '需要至少 2 个存在的 UID，传入: ' + JSON.stringify(uids) };
+  const keepTarget = (keep != null && targets.some(t => t.uid === keep)) ? targets.find(t => t.uid === keep) : targets[0];
+  const rest = targets.filter(t => t !== keepTarget);
+  snapshotForUndo('合并条目 ' + targets.map(t => '#' + t.uid).join('+'));
+  // 正文拼接（去重段落标题），关键词并集，字段取 keep 的
+  const contentParts = [];
+  for (const t of targets) {
+    const c = String(t.content || '').trim();
+    if (c && !contentParts.includes(c)) contentParts.push(c);
+  }
+  keepTarget.content = contentParts.join('\n\n');
+  const keySet = new Set((Array.isArray(keepTarget.key) ? keepTarget.key : []).map(k => String(k)));
+  for (const t of rest) {
+    for (const k of (Array.isArray(t.key) ? t.key : [])) keySet.add(String(k));
+  }
+  keepTarget.key = [...keySet];
+  keepTarget.comment = keepTarget.comment || (rest[0] && rest[0].comment) || '合并条目';
+  for (const t of rest) {
+    delete worldBook.entries[uidKey(t.uid)];
+    const idx = entries.indexOf(t);
+    if (idx >= 0) entries.splice(idx, 1);
+  }
+  renderSidebar();
+  scheduleSave();
+  return {
+    summary: '已合并 ' + targets.length + ' 条 → #' + keepTarget.uid + '「' + keepTarget.comment + '」',
+    detail: '保留 #' + keepTarget.uid + '，删除 ' + rest.map(t => '#' + t.uid).join('、') + '；关键词合并为: ' + (keepTarget.key.length ? keepTarget.key.join('、') : '(无)') + '。可 undo_last 回退。'
+  };
+}
+
+// ===== 拆分条目 =====
+function toolSplitEntry({ uid, parts }) {
+  const src = getAllEntries().find(e => e.uid === uid);
+  if (!src) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
+  const list = Array.isArray(parts) ? parts.filter(p => p && String(p.comment || '').trim() && String(p.content || '').trim()) : [];
+  if (list.length < 2) return { summary: '拆分失败', detail: 'parts 至少需要 2 个含标题和正文的条目' };
+  snapshotForUndo('拆分 #' + uid);
+  delete worldBook.entries[uidKey(uid)];
+  const idx = entries.indexOf(src);
+  if (idx >= 0) entries.splice(idx, 1);
+  const created = [];
+  for (const p of list) {
+    const newUid = nextUid();
+    const copy = JSON.parse(JSON.stringify(src));
+    copy.uid = newUid;
+    copy.comment = String(p.comment).trim();
+    copy.content = String(p.content).trim();
+    copy.key = Array.isArray(p.key) ? p.key.map(k => String(k)) : (Array.isArray(src.key) ? [...src.key] : []);
+    worldBook.entries[uidKey(newUid)] = copy;
+    entries.push(copy);
+    created.push(newUid);
+  }
+  renderSidebar();
+  scheduleSave();
+  return { summary: '已拆分 #' + uid + ' → ' + created.length + ' 条', detail: '新条目 UID: ' + created.join('、') + '（可 undo_last 回退）' };
+}
+
+// ===== 全书体检 =====
+function toolCheckEntries() {
+  const list = getAllEntries();
+  const issues = [];
+  const byKey = new Map();
+  const byTitle = new Map();
+  for (const e of list) {
+    const title = String(e.comment || '').trim();
+    if (title) {
+      const t = title.toLowerCase();
+      if (!byTitle.has(t)) byTitle.set(t, []);
+      byTitle.get(t).push(e.uid);
+    }
+    for (const k of (Array.isArray(e.key) ? e.key : [])) {
+      const key = String(k).toLowerCase().trim();
+      if (!key) continue;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(e.uid);
+    }
+  }
+  for (const e of list) {
+    const tag = '#' + e.uid + '「' + (e.comment || '(无标题)') + '」';
+    const active = !e.disable;
+    const keys = (Array.isArray(e.key) ? e.key : []).map(k => String(k).trim()).filter(Boolean);
+    const wbe = (e.extensions && e.extensions.wbe) || {};
+    if (!String(e.content || '').trim()) issues.push('[空正文] ' + tag + (wbe.semanticType ? '（类型: ' + wbe.semanticType + '）' : ''));
+    if (active && !e.constant && keys.length === 0) issues.push('[永不触发] ' + tag + ' 无关键词且非常驻，永远不会被注入');
+    for (const k of keys) {
+      if (k.length <= 1) issues.push('[关键词过短] ' + tag + ' 关键词「' + k + '」只有 ' + k.length + ' 个字，容易误触发');
+      const holders = (byKey.get(k.toLowerCase()) || []).filter(uid => uid !== e.uid && !list.find(x => x.uid === uid)?.disable);
+      if (holders.length) issues.push('[关键词冲突] ' + tag + ' 关键词「' + k + '」同时用于 ' + holders.map(h => '#' + h).join('、'));
+    }
+    const dupTitles = (byTitle.get(String(e.comment || '').toLowerCase()) || []).filter(uid => uid !== e.uid);
+    if (dupTitles.length) issues.push('[标题重复] ' + tag + ' 与 ' + dupTitles.map(h => '#' + h).join('、') + ' 标题相同');
+  }
+  const byLevel = {};
+  for (const line of issues) {
+    const level = line.slice(1, line.indexOf(']'));
+    byLevel[level] = (byLevel[level] || 0) + 1;
+  }
+  if (!issues.length) return { summary: '体检通过：' + list.length + ' 条全部健康', detail: '未发现问题。' };
+  const levelText = Object.entries(byLevel).map(([l, n]) => l + '×' + n).join('，');
+  return { summary: '发现 ' + issues.length + ' 个问题（' + levelText + '）', detail: issues.join('\n') };
+}
+
+// ===== 触发预演 =====
+function toolTestTriggers({ text }) {
+  const src = String(text || '');
+  if (!src) return { summary: '缺少测试文本', detail: '请提供要测试的场景文本' };
+  const lower = src.toLowerCase();
+  const list = getAllEntries().filter(e => !e.disable);
+  const hits = [];
+  for (const e of list) {
+    if (e.constant) { hits.push({ e, why: '常驻' }); continue; }
+    const matched = (Array.isArray(e.key) ? e.key : []).filter(k => {
+      const kk = String(k).trim().toLowerCase();
+      return kk && lower.includes(kk);
+    });
+    if (matched.length) hits.push({ e, why: '关键词: ' + matched.join('/') });
+  }
+  // 按 SillyTavern 注入顺序：depth 升序，order 升序
+  hits.sort((a, b) => (a.e.depth || 0) - (b.e.depth || 0) || (a.e.order || 0) - (b.e.order || 0));
+  if (!hits.length) return { summary: '无条目触发', detail: '这段文本没有命中任何关键词，也没有常驻条目。' };
+  const lines = hits.map((h, i) =>
+    (i + 1) + '. #' + h.e.uid + ' ' + (h.e.comment || '(无标题)') + ' [' + h.why + '] (depth=' + (h.e.depth || 0) + ', order=' + (h.e.order || 0) + ')'
+  );
+  const constantCount = hits.filter(h => h.e.constant).length;
+  return {
+    summary: '命中 ' + hits.length + ' 条（常驻 ' + constantCount + '，关键词 ' + (hits.length - constantCount) + '）',
+    detail: '注入顺序（先 depth 后 order）:\n' + lines.join('\n')
+  };
+}
+
+// ===== 导出下载 =====
+function toolExportBook() {
+  const wb = worldBook;
+  if (!wb) return { summary: '无可导出内容', detail: '当前没有打开的世界书' };
+  const name = currentBookName() || 'world-book';
+  const blob = new Blob([JSON.stringify(wb, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name.replace(/[\\/:*?"<>|]/g, '_') + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+  return { summary: '已导出「' + name + '」(' + getAllEntries().length + ' 条)', detail: 'JSON 文件已开始下载，可直接导入 SillyTavern。' };
 }
 
 function toolUndo(args) {
