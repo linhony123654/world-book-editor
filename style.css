@@ -539,11 +539,18 @@ svg { display: block; }
 .jb-undo-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   margin-top: 10px; padding: 8px 12px;
-  border: 1px solid var(--forest); border-radius: 8px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: transparent;
+  transition: .2s ease;
+}
+.jb-undo-row.active {
+  border-color: var(--forest);
   background: var(--forest-soft);
 }
-.jb-undo-tip { color: var(--forest); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.jb-undo-tip { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.jb-undo-row.active .jb-undo-tip { color: var(--forest); }
 .jb-undo-row .action { width: auto; padding: 5px 12px; min-height: 0; height: auto; font-size: 10px; }
+.jb-undo-row .action:disabled { opacity: .4; cursor: default; }
 
 /* ===== 登录 / 首次设置 ===== */
 .app.auth-hidden .bottom-nav { display: none; }

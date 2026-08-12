@@ -319,6 +319,23 @@ const JB_PRESETS = [
   }
 ];
 
+function updateJbUndoRow() {
+  const row = $('jbUndoRow');
+  const tip = $('jbUndoTip');
+  const undoBtn = $('jbUndoBtn');
+  const ta = $('apiPromptInput');
+  if (!row) return;
+  const value = ta ? ta.value : '';
+  const active = JB_PRESETS.filter(p => p.anchor && value.includes(p.anchor));
+  row.classList.toggle('active', active.length > 0);
+  if (tip) {
+    tip.textContent = active.length
+      ? '已加入破限模板 ×' + active.length + '：' + active.map(p => p.name.split(' · ')[1] || p.name).join('、')
+      : '未加入破限模板';
+  }
+  if (undoBtn) undoBtn.disabled = active.length === 0;
+}
+
 function bindJbPresets() {
   const btn = $('jbPresetBtn');
   const modal = $('jbModal');
@@ -337,22 +354,6 @@ function bindJbPresets() {
       return true;
     }
     return false;
-  }
-
-  function updateUndoRow() {
-    const row = $('jbUndoRow');
-    const tip = $('jbUndoTip');
-    const ta = $('apiPromptInput');
-    if (!row) return;
-    // 实时检测：根据输入框里实际存在的破限内容决定显示与数量
-    const value = ta ? ta.value : '';
-    const active = JB_PRESETS.filter(p => p.anchor && value.includes(p.anchor));
-    if (active.length === 0) {
-      row.hidden = true;
-      return;
-    }
-    row.hidden = false;
-    if (tip) tip.textContent = '已加入破限模板 ×' + active.length + '：' + active.map(p => p.name.split(' · ')[1] || p.name).join('、');
   }
 
   btn.addEventListener('click', () => {
@@ -375,7 +376,7 @@ function bindJbPresets() {
     jbHistory.push(p.text);
     modal.classList.remove('open');
     const saved = savePromptToProfile(ta.value.trim());
-    updateUndoRow();
+    updateJbUndoRow();
     showToast('已加入「' + p.name + '」' + (saved ? '，可撤销' : '，保存后生效'), 'success');
   });
   const undoBtn = $('jbUndoBtn');
@@ -386,19 +387,19 @@ function bindJbPresets() {
     const idx = ta.value.lastIndexOf(text);
     if (idx < 0) {
       jbHistory.pop(); // 内容已被手动改过，从历史里丢弃避免卡死
-      updateUndoRow();
+      updateJbUndoRow();
       showToast('未找到该模板（可能已手动修改），已跳过', 'error');
       return;
     }
     ta.value = (ta.value.slice(0, idx) + ta.value.slice(idx + text.length)).replace(/\n{3,}$/, '\n').trim();
     jbHistory.pop();
     const saved = savePromptToProfile(ta.value);
-    updateUndoRow();
+    updateJbUndoRow();
     showToast('已撤销 ' + (jbHistory.length ? '一个破限模板' : '全部破限模板') + (saved ? '并保存' : ''), 'success');
   });
   // 手动编辑输入框时实时刷新提示条（删除/改动破限内容后条会自动消失或更新数量）
   const ta = $('apiPromptInput');
-  if (ta) ta.addEventListener('input', updateUndoRow);
+  if (ta) ta.addEventListener("input", updateJbUndoRow);
 }
 
 function refreshSettings() {
@@ -507,6 +508,7 @@ function fillModalFields(p) {
   $('apiPromptInput').value = (p && p.prompt) || DEFAULT_SYSTEM_PROMPT;
   $('modelStatus').textContent = '';
   $('modelStatus').className = 'model-status';
+  updateJbUndoRow(); // 填充提示词后按内容刷新破限状态条
 }
 
 function openApiModal() {
