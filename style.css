@@ -220,7 +220,7 @@ svg { display: block; }
 .bottom-nav {
   position: fixed; left: 50%; bottom: 0; transform: translateX(-50%);
   width: min(100%, 430px); min-height: calc(66px + var(--safe-bottom));
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(3, 1fr);
   padding: 7px 6px var(--safe-bottom); border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--paper) 94%, transparent); backdrop-filter: blur(16px); z-index: 11;
 }
