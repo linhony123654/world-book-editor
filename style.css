@@ -573,6 +573,8 @@ svg { display: block; }
 /* ===== Modal / sheet / toast ===== */
 .modal { position: fixed; inset: 0; display: none; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.48); backdrop-filter: blur(8px); z-index: 30; }
 .modal.open { display: flex; }
+/* 破限预设弹窗可能在接口配置弹窗之上打开，需更高层级 */
+#jbModal { z-index: 40; }
 .sheet { width: min(100%, 430px); padding: 20px 20px calc(24px + var(--safe-bottom)); border-top: 1px solid var(--ink); background: var(--paper); box-shadow: var(--shadow); }
 .sheet-scroll { max-height: 86dvh; overflow-y: auto; }
 .sheet .mini { color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .16em; text-transform: uppercase; }

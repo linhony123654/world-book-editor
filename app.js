@@ -335,9 +335,21 @@ function bindJbPresets() {
     const p = JB_PRESETS[Number(item.dataset.jb)];
     if (!p) return;
     const ta = $('apiPromptInput');
-    if (ta) ta.value = (ta.value || '').trim() + p.text;
+    if (!ta) return;
+    ta.value = (ta.value || '').trim() + p.text;
     modal.classList.remove('open');
-    showToast('已追加「' + p.name + '」到系统提示词', 'success');
+    // 自动保存到当前正在编辑的档案（避免用户忘记点保存按钮）
+    const arr = loadProfiles();
+    let id = editingProfileId;
+    const existing = id ? arr.find(x => x.id === id) : null;
+    if (existing) {
+      existing.prompt = ta.value.trim();
+      saveProfiles(arr);
+      setActiveProfile(id);
+      showToast('已追加「' + p.name + '」并保存', 'success');
+    } else {
+      showToast('已追加「' + p.name + '」，点保存生效', 'success');
+    }
   });
 }
 
