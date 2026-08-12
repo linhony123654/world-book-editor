@@ -25,7 +25,7 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   '世界书条目规范——条目是注入给扮演 AI 的设定片段，不是给用户看的文章：正文直接陈述设定事实，信息密度高；篇幅按设定复杂度弹性——小条目 80–300 字，主要人物/组织/规则体系等大卡可 500–1500 字甚至更长，内容完整优先，不删细节也不注水。按段落组织；关键词选书里会出现的人名/地名/物品/概念等具体词（2–6 个），不要用“他”“王城”这类过泛的词；常驻(constant)用于始终生效的规则/口吻，关键词触发用于按需注入的具体设定；内容与已有条目互补，不重复改写同一设定。参考示例：「标题：王城夜禁｜关键词：夜禁、宵禁｜正文：王城每日戌时起宵禁，城门紧闭、坊市禁火。巡夜禁军遇无令牌者先警告再擒拿，反抗者可就地处决；仅更夫、御医与持金牌者通行。」' +
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
-  'web_search 使用规则——仅在需要现实世界资料时调用（用户要求查证历史/地理/文化/法律/科技等真实知识，或写作需要现实依据时）；世界书内部内容一律用 search_entries 查，不要联网；纯虚构创作且用户未要求查证时不要调用；单回合最多调用 2 次；结果需甄别，提炼可用信息融入设定，不要照抄原文。' +
+  'web_search 使用规则——仅在需要现实世界资料时调用（用户要求查证历史/地理/文化/法律/科技等真实知识，或写作需要现实依据时）；世界书内部内容一律用 search_entries 查，不要联网；纯虚构创作且用户未要求查证时不要调用；单回合最多调用 5 次；结果需甄别，提炼可用信息融入设定，不要照抄原文。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
 const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','web_search','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
 const smartDraftState = createSmartDraftState();
