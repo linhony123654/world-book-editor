@@ -320,7 +320,7 @@ function bindJbPresets() {
   const modal = $('jbModal');
   const list = $('jbPresetList');
   if (!btn || !modal || !list) return;
-  let lastJbText = '';
+  const jbHistory = []; // 追加历史栈：后加入的先撤销
 
   function savePromptToProfile(prompt) {
     const arr = loadProfiles();
@@ -335,9 +335,16 @@ function bindJbPresets() {
     return false;
   }
 
-  function setUndoVisible(visible) {
+  function updateUndoRow() {
     const row = $('jbUndoRow');
-    if (row) row.hidden = !visible;
+    const tip = $('jbUndoTip');
+    if (!row) return;
+    if (jbHistory.length === 0) {
+      row.hidden = true;
+      return;
+    }
+    row.hidden = false;
+    if (tip) tip.textContent = '已加入破限模板 ×' + jbHistory.length;
   }
 
   btn.addEventListener('click', () => {
@@ -357,25 +364,29 @@ function bindJbPresets() {
     const ta = $('apiPromptInput');
     if (!ta) return;
     ta.value = (ta.value || '').trim() + p.text;
-    lastJbText = p.text;
+    jbHistory.push(p.text);
     modal.classList.remove('open');
     const saved = savePromptToProfile(ta.value.trim());
-    setUndoVisible(true);
+    updateUndoRow();
     showToast('已加入「' + p.name + '」' + (saved ? '，可撤销' : '，保存后生效'), 'success');
   });
   const undoBtn = $('jbUndoBtn');
   if (undoBtn) undoBtn.addEventListener('click', () => {
     const ta = $('apiPromptInput');
-    if (!ta || !lastJbText) return;
-    const idx = ta.value.lastIndexOf(lastJbText);
+    const text = jbHistory[jbHistory.length - 1];
+    if (!ta || !text) return;
+    const idx = ta.value.lastIndexOf(text);
     if (idx < 0) {
-      showToast('未找到上次追加的模板（可能已手动修改），请手动删除', 'error');
+      jbHistory.pop(); // 内容已被手动改过，从历史里丢弃避免卡死
+      updateUndoRow();
+      showToast('未找到该模板（可能已手动修改），已跳过', 'error');
       return;
     }
-    ta.value = (ta.value.slice(0, idx) + ta.value.slice(idx + lastJbText.length)).replace(/\n{3,}$/, '\n').trim();
+    ta.value = (ta.value.slice(0, idx) + ta.value.slice(idx + text.length)).replace(/\n{3,}$/, '\n').trim();
+    jbHistory.pop();
     const saved = savePromptToProfile(ta.value);
-    setUndoVisible(false);
-    showToast('已撤销破限模板' + (saved ? '并保存' : ''), 'success');
+    updateUndoRow();
+    showToast('已撤销 ' + (jbHistory.length ? '一个破限模板' : '全部破限模板') + (saved ? '并保存' : ''), 'success');
   });
 }
 
