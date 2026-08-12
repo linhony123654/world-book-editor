@@ -1,0 +1,417 @@
+// ===== World Book Editor — 主入口（杂志风导航） =====
+import { $, escHtml, escAttr, showToast } from './modules/utils.js';
+import { loadBookList, loadBook, importFile, exportFile, autoSave } from './modules/api.js';
+import { renderSidebar, initSidebar } from './modules/sidebar.js';
+import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
+import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
+import { initBooks, renderArchives } from './modules/books.js';
+import { entries } from './modules/state.js';
+import { chooseInitialBookId } from './modules/book-session.js';
+import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
+
+const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings'];
+
+// ===== 多 API 配置档案 =====
+// 存储：wbe-api-profiles = [{id,name,url,key,model,prompt}]，wbe-api-active = id
+// 切换/保存时把当前档案镜像到旧键(wbe-api-url/key/model/system-prompt)，chat.js 无需改动
+let editingProfileId = null;
+
+function loadProfiles() {
+  let arr = [];
+  try { arr = JSON.parse(localStorage.getItem('wbe-api-profiles') || '[]'); } catch {}
+  if (!Array.isArray(arr)) arr = [];
+  // 迁移旧的单一配置
+  if (arr.length === 0) {
+    const url = localStorage.getItem('wbe-api-url') || '';
+    const key = localStorage.getItem('wbe-api-key') || '';
+    if (url || key) {
+      arr = [{
+        id: 'p' + Date.now(), name: '默认配置', url, key,
+        model: localStorage.getItem('wbe-model') || '',
+        prompt: localStorage.getItem('wbe-system-prompt') || ''
+      }];
+      localStorage.setItem('wbe-api-profiles', JSON.stringify(arr));
+      localStorage.setItem('wbe-api-active', arr[0].id);
+    }
+  }
+  return arr;
+}
+function saveProfiles(arr) { localStorage.setItem('wbe-api-profiles', JSON.stringify(arr)); }
+function activeProfileId() { return localStorage.getItem('wbe-api-active') || ''; }
+function getProfile(id) { return loadProfiles().find(p => p.id === id) || null; }
+function mirrorLegacy(p) {
+  localStorage.setItem('wbe-api-url', (p && p.url) || '');
+  localStorage.setItem('wbe-api-key', (p && p.key) || '');
+  localStorage.setItem('wbe-model', (p && p.model) || '');
+  localStorage.setItem('wbe-system-prompt', (p && p.prompt) || '');
+}
+function setActiveProfile(id) {
+  const p = getProfile(id);
+  if (!p) return;
+  localStorage.setItem('wbe-api-active', id);
+  mirrorLegacy(p);
+  refreshSettings();
+}
+
+// ===== 屏幕切换 =====
+function setScreen(name) {
+  if (!SCREENS.includes(name)) return;
+  SCREENS.forEach(s => {
+    const el = $('screen-' + s);
+    if (el) el.classList.toggle('active', s === name);
+  });
+  document.querySelectorAll('.bottom-nav .nav').forEach(b => {
+    b.classList.toggle('active', b.dataset.nav === name);
+  });
+  // 滚动容器是 .app（不是 window）：进 chat 直接落到最新消息，其余回到顶部
+  const app = document.querySelector('.app');
+  if (app) app.scrollTop = name === 'chat' ? app.scrollHeight : 0;
+  else window.scrollTo(0, 0);
+  if (name === 'archives') renderArchives();
+  if (name === 'settings') refreshSettings();
+  if (name === 'editor') autoSizeTitle(); // 隐藏时渲染过标题，切回来重算高度
+}
+
+// ===== 选中条目回调（渲染编辑器，不强制切屏） =====
+function onSelectEntry(uid) {
+  const entry = entries.find(e => e.uid === uid);
+  if (entry) renderEditor(entry);
+}
+
+// ===== 初始化 =====
+async function init() {
+  bindNav();
+  bindEntryActions();
+  bindSettings();
+  bindApiModal();
+  bindModalClose();
+
+  initSidebar(onSelectEntry, setScreen);
+  initChat();
+  initBooks({ renderSidebar, selectEntry: onSelectEntry, renderEditorEmpty }, setScreen);
+
+  initTheme();
+  initAutoSaveSwitch();
+
+  const books = await loadBookList();
+  if (books.length > 0) {
+    await loadBook(chooseInitialBookId(books), renderSidebar, onSelectEntry, renderEditorEmpty);
+    ensureMemoryLoaded(); // 书加载后同步本书记忆（角标/注入/清空都对得上）
+  } else {
+    renderEditorEmpty();
+  }
+  refreshSettings();
+}
+
+// ===== 导航绑定 =====
+function bindNav() {
+  document.querySelectorAll('[data-nav]').forEach(btn => {
+    btn.addEventListener('click', () => setScreen(btn.dataset.nav));
+  });
+  document.querySelectorAll('[data-go]').forEach(btn => {
+    btn.addEventListener('click', () => setScreen(btn.dataset.go));
+  });
+}
+
+// ===== 条目操作 =====
+function bindEntryActions() {
+  // FAB 新建 → 打开弹窗
+  const fab = $('newEntryBtn');
+  if (fab) fab.addEventListener('click', openEntryModal);
+
+  const createBtn = $('createEntryBtn');
+  if (createBtn) createBtn.addEventListener('click', onCreateEntry);
+  const titleInput = $('newTitleInput');
+  if (titleInput) titleInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); onCreateEntry(); }
+  });
+
+  // 保存条
+  $('deleteBtn') && $('deleteBtn').addEventListener('click', deleteEntry);
+  $('duplicateBtn') && $('duplicateBtn').addEventListener('click', duplicateEntry);
+  $('saveBtn') && $('saveBtn').addEventListener('click', manualSave);
+  $('quickSaveBtn') && $('quickSaveBtn').addEventListener('click', manualSave);
+}
+
+async function manualSave() {
+  await autoSave();
+  showToast('已保存', 'success');
+}
+
+function openEntryModal() {
+  const input = $('newTitleInput');
+  if (input) input.value = '';
+  $('entryModal').classList.add('open');
+  if (input) input.focus();
+}
+function onCreateEntry() {
+  const input = $('newTitleInput');
+  const title = (input && input.value.trim()) || '';
+  newEntry(title);
+  $('entryModal').classList.remove('open');
+  setScreen('editor');
+}
+
+// ===== 设置项绑定 =====
+function bindSettings() {
+  $('importBtn') && $('importBtn').addEventListener('click', () => $('file-input').click());
+  $('file-input').addEventListener('change', e => {
+    if (e.target.files[0]) importFile(e.target.files[0], renderSidebar, onSelectEntry, renderEditorEmpty);
+    e.target.value = '';
+  });
+  $('exportBtn') && $('exportBtn').addEventListener('click', exportFile);
+  $('reloadBtn') && $('reloadBtn').addEventListener('click', async () => {
+    const books = await loadBookList();
+    const cur = (await import('./modules/state.js')).currentBookId;
+    const target = books.find(b => b.id === cur) || books[0];
+    if (target) { await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty); ensureMemoryLoaded(); }
+    else showToast('没有可加载的世界书', 'error');
+  });
+  $('openApiBtn') && $('openApiBtn').addEventListener('click', openApiModal);
+  $('apiConfigRow') && $('apiConfigRow').addEventListener('click', e => {
+    if (e.target.closest('#openApiBtn') || e.target.closest('#apiProfileSelect')) return;
+    openApiModal();
+  });
+  // 快速切换档案
+  const quick = $('apiProfileSelect');
+  if (quick) quick.addEventListener('change', () => {
+    setActiveProfile(quick.value);
+    const p = getProfile(quick.value);
+    showToast('已切换到「' + (p ? p.name : '') + '」', 'success');
+  });
+
+  const chatLimit = $('chatVisibleLimitInput');
+  if (chatLimit) chatLimit.addEventListener('change', () => {
+    const limit = saveChatVisibleLimit(chatLimit.value);
+    chatLimit.value = String(limit);
+    applyChatVisibleLimit();
+    showToast(limit === 0 ? '会话已设为显示全部' : '会话显示最近 ' + limit + ' 条', 'success');
+  });
+}
+
+function refreshSettings() {
+  const profiles = loadProfiles();
+  const active = getProfile(activeProfileId()) || profiles[0] || null;
+
+  // API 状态
+  const label = $('apiStatusLabel');
+  if (label) {
+    label.textContent = (active && active.url && active.model)
+      ? ('已连接 · ' + active.model)
+      : '未配置 · 点击设置 API / 模型';
+  }
+  // 快速切换下拉
+  const quick = $('apiProfileSelect');
+  if (quick) {
+    if (profiles.length === 0) {
+      quick.style.display = 'none';
+    } else {
+      quick.style.display = '';
+      quick.innerHTML = profiles.map(p =>
+        '<option value="' + escAttr(p.id) + '">' + escHtml(p.name || '未命名') + '</option>'
+      ).join('');
+      quick.value = (active && active.id) || profiles[0].id;
+    }
+  }
+  // 自动保存开关状态
+  const sw = $('autoSaveSwitch');
+  if (sw) sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
+  const chatLimit = $('chatVisibleLimitInput');
+  if (chatLimit) chatLimit.value = String(readChatVisibleLimit());
+}
+
+// ===== 主题 =====
+function initTheme() {
+  const saved = localStorage.getItem('wbe-theme') || 'light';
+  applyTheme(saved);
+  const sw = $('themeSwitch');
+  if (sw) sw.addEventListener('click', () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    localStorage.setItem('wbe-theme', next);
+  });
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const sw = $('themeSwitch');
+  if (sw) sw.classList.toggle('off', theme === 'dark');
+  const label = $('themeLabel');
+  if (label) label.textContent = theme === 'dark' ? '夜墨模式 · 深色背景' : '暖纸张、墨色正文与酒红强调';
+  const mc = document.querySelector('meta[name="theme-color"]');
+  if (mc) mc.setAttribute('content', theme === 'dark' ? '#11110f' : '#f3efe7');
+}
+
+// ===== 自动保存开关 =====
+function initAutoSaveSwitch() {
+  const sw = $('autoSaveSwitch');
+  if (!sw) return;
+  sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
+  sw.addEventListener('click', () => {
+    const off = sw.classList.toggle('off');
+    localStorage.setItem('wbe-autosave', off ? 'off' : 'on');
+    showToast(off ? '已关闭自动保存' : '已开启自动保存', 'success');
+  });
+}
+
+// ===== 通用弹窗关闭 =====
+function bindModalClose() {
+  function closeModal(m) {
+    if (!m || !m.classList.contains('open')) return;
+    m.classList.remove('open');
+    m.dispatchEvent(new CustomEvent('modal:closed'));
+  }
+  document.querySelectorAll('[data-close-modal]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = $(btn.dataset.closeModal);
+      closeModal(m);
+    });
+  });
+  ['entryModal', 'bookModal', 'apiModal', 'memoryModal', 'templateModal', 'smartDraftModal'].forEach(id => {
+    const m = $(id);
+    if (m) m.addEventListener('click', e => { if (e.target === m) closeModal(m); });
+  });
+}
+
+// ===== API 配置弹窗（多档案） =====
+function populateModalSelect(profiles) {
+  const sel = $('apiProfileSelectModal');
+  if (!sel) return;
+  let html = profiles.map(p =>
+    '<option value="' + escAttr(p.id) + '">' + escHtml(p.name || '未命名') + '</option>'
+  ).join('');
+  if (editingProfileId === null) html += '<option value="" selected>＜新配置＞</option>';
+  sel.innerHTML = html;
+  if (editingProfileId !== null) sel.value = editingProfileId;
+}
+
+function fillModalFields(p) {
+  $('apiNameInput').value = (p && p.name) || '';
+  $('apiUrlInput').value = (p && p.url) || '';
+  $('apiKeyInput').value = (p && p.key) || '';
+  const model = (p && p.model) || '';
+  $('apiModelSelect').dataset.current = model;
+  $('apiModelSelect').innerHTML = '<option value="' + escAttr(model) + '">' +
+    escHtml(model || '-- 先拉取模型列表 --') + '</option>';
+  $('apiPromptInput').value = (p && p.prompt) || DEFAULT_SYSTEM_PROMPT;
+  $('modelStatus').textContent = '';
+  $('modelStatus').className = 'model-status';
+}
+
+function openApiModal() {
+  const profiles = loadProfiles();
+  editingProfileId = activeProfileId() || (profiles[0] && profiles[0].id) || null;
+  const editing = getProfile(editingProfileId);
+  if (!editing) editingProfileId = null; // 没有任何档案 → 进入新建态
+  populateModalSelect(profiles);
+  fillModalFields(editing);
+  $('apiModal').classList.add('open');
+  if ($('apiUrlInput').value.trim() && $('apiKeyInput').value.trim()) {
+    setTimeout(() => $('fetchModelsBtn').click(), 100);
+  }
+}
+
+function bindApiModal() {
+  // 在弹窗内切换正在编辑的档案
+  $('apiProfileSelectModal') && $('apiProfileSelectModal').addEventListener('change', e => {
+    const id = e.target.value;
+    editingProfileId = id || null;
+    fillModalFields(id ? getProfile(id) : null);
+  });
+
+  // 新建档案
+  $('newProfileBtn') && $('newProfileBtn').addEventListener('click', () => {
+    editingProfileId = null;
+    populateModalSelect(loadProfiles());
+    fillModalFields(null);
+    $('apiNameInput').value = '新配置';
+    $('apiNameInput').focus();
+    $('apiNameInput').select();
+  });
+
+  // 删除档案
+  $('deleteProfileBtn') && $('deleteProfileBtn').addEventListener('click', () => {
+    if (editingProfileId === null) { showToast('当前是未保存的新配置', 'error'); return; }
+    let arr = loadProfiles();
+    const p = arr.find(x => x.id === editingProfileId);
+    arr = arr.filter(x => x.id !== editingProfileId);
+    saveProfiles(arr);
+    if (activeProfileId() === editingProfileId) {
+      if (arr.length) setActiveProfile(arr[0].id);
+      else { localStorage.removeItem('wbe-api-active'); mirrorLegacy(null); }
+    }
+    showToast('已删除「' + (p ? p.name : '') + '」', 'success');
+    editingProfileId = arr.length ? activeProfileId() : null;
+    populateModalSelect(arr);
+    fillModalFields(getProfile(editingProfileId));
+    refreshSettings();
+  });
+
+  $('saveApiBtn') && $('saveApiBtn').addEventListener('click', () => {
+    const data = {
+      name: $('apiNameInput').value.trim() || '未命名',
+      url: $('apiUrlInput').value.trim(),
+      key: $('apiKeyInput').value.trim(),
+      model: $('apiModelSelect').value,
+      prompt: $('apiPromptInput').value.trim()
+    };
+    const arr = loadProfiles();
+    let id = editingProfileId;
+    const existing = id ? arr.find(p => p.id === id) : null;
+    if (existing) {
+      Object.assign(existing, data);
+    } else {
+      id = 'p' + Date.now();
+      arr.push({ id, ...data });
+    }
+    saveProfiles(arr);
+    setActiveProfile(id);   // 同时镜像到旧键供 chat.js 使用
+    editingProfileId = id;
+    $('apiModal').classList.remove('open');
+    showToast('已保存「' + data.name + '」', 'success');
+    refreshSettings();
+  });
+
+  $('fetchModelsBtn') && $('fetchModelsBtn').addEventListener('click', async () => {
+    const url = $('apiUrlInput').value.trim();
+    const key = $('apiKeyInput').value.trim();
+    const status = $('modelStatus');
+    const modelSelect = $('apiModelSelect');
+
+    if (!url || !key) {
+      status.textContent = '请先填写 API 地址和 Key';
+      status.className = 'model-status error';
+      return;
+    }
+    status.textContent = '拉取中…';
+    status.className = 'model-status';
+
+    try {
+      // 经本地后端代理转发，避免第三方网关缺 CORS 头被浏览器拦截
+      const resp = await fetch('/api/proxy/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, key })
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      const models = (data.data || data).map(m => m.id || m).filter(Boolean).sort();
+
+      const currentModel = modelSelect.dataset.current || localStorage.getItem('wbe-model') || '';
+      let options = '<option value="">-- 请选择模型 --</option>';
+      for (const m of models) {
+        options += '<option value="' + escAttr(m) + '"' + (m === currentModel ? ' selected' : '') + '>' + escHtml(m) + '</option>';
+      }
+      modelSelect.innerHTML = options;
+      if (!currentModel && models.length > 0) modelSelect.value = models[0];
+
+      status.textContent = '已获取 ' + models.length + ' 个模型';
+      status.className = 'model-status success';
+    } catch (e) {
+      status.textContent = '拉取失败: ' + e.message;
+      status.className = 'model-status error';
+    }
+  });
+}
+
+// ===== 启动 =====
+init();

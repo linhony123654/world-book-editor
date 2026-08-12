@@ -1,0 +1,16 @@
+{
+  "name": "world-book-editor",
+  "version": "1.0.0",
+  "description": "基于 Web 的 SillyTavern 世界书（World Info / Lorebook）可视化编辑器。 支持导入/导出 JSON，按 UID 浏览条目，通过 AI 聊天调用工具修改世界书。",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "express": "^5.2.1"
+  }
+}

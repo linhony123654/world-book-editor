@@ -1,0 +1,4 @@
+node_modules/
+world-books.db*
+backup_pre_magazine/
+*.log
