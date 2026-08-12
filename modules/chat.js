@@ -984,14 +984,16 @@ function getTools() {
       type: 'function',
       function: {
         name: 'search_entries',
-        description: '搜索世界书条目。返回匹配的条目列表。',
+        description: '搜索世界书条目。返回匹配的条目列表；可带语义类型筛选，或要求返回完整正文以便跨条目编辑。',
         parameters: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: '搜索关键词（匹配标题、关键词、内容）' },
-            filter: { type: 'string', enum: ['all','constant','keyword','disabled'], description: '筛选类型' }
+            query: { type: 'string', description: '搜索关键词（匹配标题、关键词、内容）；为空则匹配筛选条件下的全部' },
+            filter: { type: 'string', enum: ['all','constant','keyword','disabled'], description: '筛选类型' },
+            type: { type: 'string', enum: ['character','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '按语义类型筛选（智能写作分类），如 law=法律、magic=超凡体系；也匹配 AI 自定义分类' },
+            includeContent: { type: 'boolean', description: '是否返回每条匹配条目的完整正文（批量编辑前查看用）；默认 false 只返回标题列表' }
           },
-          required: ['query']
+          required: []
         }
       }
     },
@@ -1224,15 +1226,20 @@ function getTools() {
       type: 'function',
       function: {
         name: 'undo_last',
-        description: '撤销上一次对世界书的修改（新增/删除/编辑/批量/复制等），恢复到操作前的状态',
-        parameters: { type: 'object', properties: {} }
+        description: '撤销对世界书的修改（新增/删除/编辑/批量/复制等），恢复到操作前的状态；steps 大于 1 时一次回退多步',
+        parameters: {
+          type: 'object',
+          properties: {
+            steps: { type: 'integer', minimum: 1, maximum: 10, description: '回退步数，默认 1' }
+          }
+        }
       }
     },
     {
       type: 'function',
       function: {
         name: 'get_book_info',
-        description: '获取当前正在编辑的世界书信息：书名、ID、条目数',
+        description: '获取当前世界书概览：书名、条目数、常驻/关键词/禁用分布、各语义类型条目数。规划编辑前先调用一次。',
         parameters: { type: 'object', properties: {} }
       }
     },
@@ -1504,7 +1511,7 @@ async function executeTool(name, args) {
     case 'toggle_entry': return toolToggle(args);
     case 'reorder_entry': return toolReorder(args);
     case 'duplicate_entry': return toolDuplicate(args);
-    case 'undo_last': return toolUndo();
+    case 'undo_last': return toolUndo(args);
     case 'get_book_info': return toolBookInfo();
     case 'list_books': return await toolListBooks();
     case 'switch_book': return await toolSwitchBook(args || {});
@@ -1521,11 +1528,18 @@ function getAllEntries() {
   return wb && wb.entries ? Object.values(wb.entries) : (Array.isArray(entries) ? entries : []);
 }
 
-function toolSearch({ query, filter }) {
+function toolSearch({ query, filter, type, includeContent }) {
   let list = getAllEntries();
   if (filter === 'constant') list = list.filter(e => e.constant && !e.disable);
   else if (filter === 'keyword') list = list.filter(e => !e.constant && !e.disable);
   else if (filter === 'disabled') list = list.filter(e => e.disable);
+  if (type) {
+    const t = String(type).toLowerCase();
+    list = list.filter(e => {
+      const wbe = (e.extensions && e.extensions.wbe) || {};
+      return wbe.semanticType === t || String(wbe.customType || '').toLowerCase().includes(t);
+    });
+  }
   if (query) {
     const q = query.toLowerCase();
     list = list.filter(e =>
@@ -1535,6 +1549,17 @@ function toolSearch({ query, filter }) {
     );
   }
   const summary = '找到 ' + list.length + ' 条';
+  if (includeContent) {
+    const shown = list.slice(0, 8);
+    let detail = shown.map(e => {
+      const flag = e.disable ? '[禁]' : (e.constant ? '[常驻]' : '');
+      return '#' + e.uid + ' ' + flag + ' ' + (e.comment || '(无标题)') +
+        (Array.isArray(e.key) && e.key.length ? ' 关键词:' + e.key.join('/') : '') +
+        '\n' + String(e.content || '');
+    }).join('\n\n');
+    if (list.length > shown.length) detail += '\n\n... 还有 ' + (list.length - shown.length) + ' 条未显示，可缩小关键词后再次搜索';
+    return { summary, detail: detail || '(无条目)' };
+  }
   const shown = list.slice(0, 20);
   let detail = shown.map(e => '#' + e.uid + ' ' + (e.comment||'')).join('\n');
   if (list.length > shown.length) detail += '\n... 还有 ' + (list.length - shown.length) + ' 条未显示，可缩小关键词或用 list_entries 查看';
@@ -2011,9 +2036,17 @@ function toolDuplicate({ uid }) {
   return { summary: '已复制 #' + uid + ' → #' + newUid, detail: '新副本 UID: ' + newUid + '（标题: ' + copy.comment + '）' };
 }
 
-function toolUndo() {
-  const label = restoreUndo();
-  if (!label) return { summary: '无可撤销操作', detail: '撤销栈为空，没有可恢复的修改' };
+function toolUndo(args) {
+  const steps = Math.max(1, Math.min(parseInt(args && args.steps, 10) || 1, 10));
+  let label = null;
+  let undone = 0;
+  for (let i = 0; i < steps; i++) {
+    const l = restoreUndo();
+    if (!l) break;
+    label = l;
+    undone++;
+  }
+  if (!undone) return { summary: '无可撤销操作', detail: '撤销栈为空，没有可恢复的修改' };
   renderSidebar();
   if (currentUid) {
     const e = entries.find(x => x.uid === currentUid);
@@ -2021,6 +2054,7 @@ function toolUndo() {
     else { import('./state.js').then(m => m.setCurrentUid(null)); renderEditorEmpty(); }
   }
   scheduleSave();
+  if (undone > 1) return { summary: '已撤销 ' + undone + ' 步操作', detail: '最后一步是「' + label + '」，已恢复到更早状态' };
   return { summary: '已撤销「' + label + '」', detail: '已恢复到「' + label + '」操作之前的状态' };
 }
 
@@ -2032,9 +2066,25 @@ function currentBookName() {
 
 function toolBookInfo() {
   const name = currentBookName();
+  const list = getAllEntries();
+  const constant = list.filter(e => e.constant && !e.disable).length;
+  const keyword = list.filter(e => !e.constant && !e.disable).length;
+  const disabled = list.filter(e => e.disable).length;
+  const byType = {};
+  for (const e of list) {
+    const wbe = (e.extensions && e.extensions.wbe) || {};
+    const t = wbe.semanticType || (e.disable ? 'disabled' : (e.constant ? '常驻(未分类)' : '未分类'));
+    byType[t] = (byType[t] || 0) + 1;
+  }
+  const typeLines = Object.entries(byType).sort((a, b) => b[1] - a[1])
+    .map(([t, n]) => t + ': ' + n).join('\n');
   return {
-    summary: '当前「' + name + '」，' + entries.length + ' 条',
-    detail: '书名: ' + name + '\nID: ' + (currentBookId != null ? currentBookId : '未知') + '\n条目数: ' + entries.length
+    summary: '当前「' + name + '」，' + list.length + ' 条（常驻 ' + constant + ' / 关键词 ' + keyword + ' / 禁用 ' + disabled + '）',
+    detail: '书名: ' + name + '\nID: ' + (currentBookId != null ? currentBookId : '未知') +
+      '\n条目数: ' + list.length +
+      '\n常驻: ' + constant + '，关键词触发: ' + keyword + '，禁用: ' + disabled +
+      '\n按语义类型分布:\n' + (typeLines || '(无)') +
+      '\n提示: 需要看某类条目全文时用 search_entries 的 type + includeContent 参数。'
   };
 }
 
