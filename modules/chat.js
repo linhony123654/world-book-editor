@@ -608,9 +608,10 @@ async function* streamSSE(response) {
 // ===== 流式 fetch 请求 =====
 async function streamFetch(apiUrl, apiKey, body) {
   // 经本地后端代理转发流式 SSE，绕开第三方网关缺 CORS 头的问题
+  const { authHeaders } = await import('./auth.js');
   const resp = await fetch('/api/proxy/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ url: apiUrl, key: apiKey, body: { ...body, stream: true } })
   });
   if (!resp.ok) throw new Error('API ' + resp.status + ': ' + await resp.text());

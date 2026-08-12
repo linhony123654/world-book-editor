@@ -2,12 +2,20 @@ const express = require('express');
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { Readable } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 8084;
 
 app.use(express.json({ limit: '50mb' }));
+
+// 静态文件白名单：只暴露前端文件，数据库/源码/依赖目录一律 404
+const DENY_STATIC = /\.(db|db-wal|db-shm|sqlite|sqlite3)$|^\/node_modules\/|^\.(git|env|npmrc)/;
+app.use((req, res, next) => {
+  if (DENY_STATIC.test(req.path)) return res.status(404).end();
+  next();
+});
 app.use(express.static(path.join(__dirname), {
   maxAge: 0,
   setHeaders: (res) => res.set('Cache-Control', 'no-store')
@@ -24,8 +32,103 @@ db.exec(`
     entry_count INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL
   )
 `);
+
+// ===== 认证：scrypt 密码哈希 + 30 天 token 会话 =====
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(pw), salt, 64).toString('hex');
+  return 'scrypt:' + salt + ':' + hash;
+}
+function verifyPassword(pw, stored) {
+  const [alg, salt, hash] = String(stored || '').split(':');
+  if (alg !== 'scrypt' || !salt || !hash) return false;
+  const test = crypto.scryptSync(String(pw), salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(test, 'hex'), Buffer.from(hash, 'hex'));
+}
+function hasUsers() { return db.prepare('SELECT COUNT(*) AS c FROM users').get().c > 0; }
+function bearerToken(req) { return String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''); }
+function userForToken(token) {
+  if (!token) return null;
+  return db.prepare(`SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > datetime('now')`).get(token) || null;
+}
+function createSession(userId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  db.prepare(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))`).run(token, userId);
+  return token;
+}
+function authRequired(req, res, next) {
+  const user = userForToken(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+  req.user = user;
+  next();
+}
+
+// ===== 认证 API =====
+app.get('/api/auth-state', (req, res) => {
+  res.json({ initialized: hasUsers() });
+});
+app.post('/api/setup', (req, res) => {
+  if (hasUsers()) return res.status(403).json({ error: 'already initialized' });
+  const username = String((req.body || {}).username || '').trim();
+  const password = String((req.body || {}).password || '');
+  if (!username || username.length < 2 || password.length < 6) {
+    return res.status(400).json({ error: '用户名至少 2 位，密码至少 6 位' });
+  }
+  db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hashPassword(password));
+  const user = db.prepare('SELECT id, username FROM users WHERE username = ?').get(username);
+  const token = createSession(user.id);
+  res.json({ token, username: user.username });
+});
+app.post('/api/login', (req, res) => {
+  const username = String((req.body || {}).username || '').trim();
+  const password = String((req.body || {}).password || '');
+  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    return res.status(401).json({ error: '用户名或密码错误' });
+  }
+  const token = createSession(user.id);
+  res.json({ token, username: user.username });
+});
+app.post('/api/logout', (req, res) => {
+  const token = bearerToken(req);
+  if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  res.json({ ok: true });
+});
+app.get('/api/me', (req, res) => {
+  const user = userForToken(bearerToken(req));
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ username: user.username });
+});
+app.post('/api/change-password', authRequired, (req, res) => {
+  const { oldPassword, newPassword } = req.body || {};
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!verifyPassword(String(oldPassword || ''), user.password_hash)) {
+    return res.status(400).json({ error: '旧密码错误' });
+  }
+  if (!newPassword || String(newPassword).length < 6) {
+    return res.status(400).json({ error: '新密码至少 6 位' });
+  }
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(String(newPassword)), user.id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+  res.json({ ok: true, message: '密码已修改，请重新登录' });
+});
+
+// 数据 API 全部需要登录
+app.use(['/api/books', '/api/proxy', '/api/test-tool'], authRequired);
 
 // ===== API: 列出所有世界书 =====
 app.get('/api/books', (req, res) => {

@@ -8,6 +8,7 @@ import { initBooks, renderArchives } from './modules/books.js';
 import { entries } from './modules/state.js';
 import { chooseInitialBookId } from './modules/book-session.js';
 import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
+import { checkAuth, bindAuth, showLoginScreen } from './modules/auth.js';
 
 const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings'];
 
@@ -80,6 +81,18 @@ function onSelectEntry(uid) {
 
 // ===== 初始化 =====
 async function init() {
+  bindAuth();
+  const authed = await checkAuth();
+  if (!authed) {
+    // 未登录/首次设置：等认证完成后启动主界面
+    window.addEventListener('wbe:authenticated', () => bootApp(), { once: true });
+    window.addEventListener('wbe:unauthorized', () => { showLoginScreen('login'); });
+    return;
+  }
+  bootApp();
+}
+
+async function bootApp() {
   bindNav();
   bindEntryActions();
   bindSettings();

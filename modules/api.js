@@ -5,12 +5,19 @@ import {
   setCurrentBookId, setDirty, setSaveTimer, applyWorldBook
 } from './state.js';
 import { rememberLastBookId } from './book-session.js';
+import { authHeaders } from './auth.js';
 
 // ===== API 请求基础 =====
 export async function apiRequest(method, url, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const opts = { method, headers: { 'Content-Type': 'application/json', ...authHeaders() } };
   if (body) opts.body = JSON.stringify(body);
   const resp = await fetch(url, opts);
+  if (resp.status === 401) {
+    // 会话失效 → 广播回登录
+    localStorage.removeItem('wbe-token');
+    window.dispatchEvent(new CustomEvent('wbe:unauthorized'));
+    throw new Error('登录已失效，请重新登录');
+  }
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return resp.json();
 }

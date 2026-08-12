@@ -13,6 +13,33 @@
 <body>
   <main class="app">
 
+    <!-- ===== 登录 / 首次设置 ===== -->
+    <section class="screen active" id="screen-login">
+      <div class="login-page">
+        <div class="cover" style="padding-top:44px">
+          <div class="issue-row">
+            <span>Private Lore Journal</span>
+            <span>Restricted</span>
+          </div>
+          <h1 class="cover-title">WORLD <span>BOOK</span></h1>
+          <div class="cover-deck">
+            <p>私人世界书编辑台。登录后继续整理你的设定与叙事。</p>
+          </div>
+        </div>
+        <div class="login-form">
+          <div class="mini" id="loginModeLabel">Sign in</div>
+          <h3 id="loginTitle">登录</h3>
+          <input id="loginUsername" type="text" placeholder="用户名" autocomplete="username" />
+          <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password" />
+          <p class="login-error" id="loginError" hidden></p>
+          <div class="config-key-actions">
+            <button class="action primary" id="loginBtn" style="flex:1">登录</button>
+            <button class="action primary" id="loginSetupBtn" style="flex:1" hidden>创建账号</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== Library ===== -->
     <section class="screen active" id="screen-library">
       <header class="masthead-bar">
@@ -225,6 +252,18 @@
         </div>
 
         <div class="settings-group">
+          <div class="setting setting-stack">
+            <div style="min-width:0">
+              <strong>账号与安全</strong>
+              <small>修改登录密码（所有设备需重新登录）/ 退出当前账号</small>
+            </div>
+            <input class="config-key-input" id="oldPasswordInput" type="password" placeholder="旧密码" autocomplete="current-password" />
+            <input class="config-key-input" id="newPasswordInput" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
+            <div class="config-key-actions">
+              <button class="action" id="changePasswordBtn">修改密码</button>
+              <button class="action danger" id="logoutBtn">退出登录</button>
+            </div>
+          </div>
           <div class="setting" id="apiConfigRow">
             <div style="min-width:0;flex:1">
               <strong>AI 接口</strong>
