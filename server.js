@@ -127,7 +127,38 @@ app.post('/api/change-password', authRequired, (req, res) => {
   res.json({ ok: true, message: '密码已修改，请重新登录' });
 });
 
-// ===== 网络搜索代理：DuckDuckGo HTML（免费无 key），结果回填给 AI =====
+// ===== 网络搜索代理：Bing 主源 + DuckDuckGo 备源（免费无 key） =====
+const SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+
+function decodeBingUrl(href) {
+  try {
+    const u = String(href).match(/[?&]u=([^&]+)/);
+    if (u) {
+      const b64 = decodeURIComponent(u[1]).replace(/^a1/, '');
+      const pad = b64 + '='.repeat((4 - b64.length % 4) % 4);
+      const url = Buffer.from(pad, 'base64').toString('utf8');
+      if (url.startsWith('http')) return url;
+    }
+  } catch {}
+  return href;
+}
+
+async function searchBing(q) {
+  const r = await fetch('https://www.bing.com/search?q=' + encodeURIComponent(q) + '&setlang=zh-hans', {
+    headers: { 'User-Agent': SEARCH_UA }
+  });
+  const html = await r.text();
+  const results = [];
+  const re = /<li class="b_algo"[\s\S]*?<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>[\s\S]*?(?:<p[^>]*>([\s\S]*?)<\/p>)?/g;
+  let m;
+  while ((m = re.exec(html)) !== null && results.length < 8) {
+    const title = String(m[2] || '').replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, ' ').trim();
+    const snippet = String(m[3] || '').replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, ' ').trim();
+    if (title) results.push({ title, url: decodeBingUrl(m[1]), snippet });
+  }
+  return { results, limited: r.status === 429 || results.length === 0 && html.length < 30000 };
+}
+
 function decodeDdgUrl(href) {
   try {
     const m = String(href).match(/uddg=([^&]+)/);
@@ -135,29 +166,34 @@ function decodeDdgUrl(href) {
   } catch { return href; }
 }
 
-function parseDdgResults(html) {
+async function searchDdg(q) {
+  const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q), {
+    headers: { 'User-Agent': SEARCH_UA }
+  });
+  const html = await r.text();
+  const limited = r.status >= 400 || html.includes('anomaly') || html.includes('unusual traffic');
   const results = [];
-  // DDG HTML 结果条目：result__a（标题+链接）与 result__snippet（摘要）成对出现
-  const re = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
-  let m;
-  while ((m = re.exec(html)) !== null && results.length < 8) {
-    const title = String(m[2] || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').trim();
-    const snippet = String(m[3] || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').trim();
-    if (title) results.push({ title, url: decodeDdgUrl(m[1]), snippet });
+  if (!limited) {
+    const re = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    let m;
+    while ((m = re.exec(html)) !== null && results.length < 8) {
+      const title = String(m[2] || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').trim();
+      if (title) results.push({ title, url: decodeDdgUrl(m[1]), snippet: '' });
+    }
   }
-  return results;
+  return { results, limited };
 }
 
 app.post('/api/proxy/search', authRequired, async (req, res) => {
   const q = String((req.body || {}).q || '').trim();
   if (!q || q.length > 200) return res.status(400).json({ error: '缺少搜索词' });
   try {
-    const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q), {
-      headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' }
-    });
-    const html = await r.text();
-    const results = parseDdgResults(html);
-    res.json({ query: q, results, source: 'duckduckgo' });
+    const bing = await searchBing(q);
+    if (bing.results.length) return res.json({ query: q, results: bing.results, source: 'bing' });
+    const ddg = await searchDdg(q);
+    if (ddg.results.length) return res.json({ query: q, results: ddg.results, source: 'duckduckgo' });
+    if (bing.limited || ddg.limited) return res.status(503).json({ error: '搜索服务暂时被限流，请稍后再试' });
+    res.json({ query: q, results: [], source: 'none' });
   } catch (e) {
     res.status(502).json({ error: '搜索失败: ' + e.message });
   }

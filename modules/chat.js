@@ -2315,6 +2315,9 @@ async function toolWebSearch({ query, limit }) {
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ q })
   });
+  if (resp.status === 503) {
+    return { summary: '搜索服务被限流', detail: '搜索服务暂时被限流（反爬），请稍后重试或换关键词。你可以先用现有知识创作，稍后再补查。' };
+  }
   if (!resp.ok) throw new Error('搜索接口 HTTP ' + resp.status);
   const data = await resp.json();
   const list = (data.results || []).slice(0, Math.max(1, Math.min(parseInt(limit, 10) || 3, 5)));
