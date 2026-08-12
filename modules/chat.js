@@ -22,6 +22,7 @@ const MAX_HISTORY = 40;
 export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据用户指令调用工具完成操作：' +
   '条目级——搜索/查看/新增(单条 add_entry、多条 add_entries)/编辑/批量修改/删除(单条 delete_entry、批量 delete_entries)/启用禁用/排序/复制/撤销；' +
   '智能写作——当用户要求创建人物、地点、组织、规则、事件、物品、关系、文风等设定条目时，复杂条目优先用 plan_smart_entry 生成预览，由用户确认后写入；用户明确要求直接创建时才用 create_smart_entry。content 必须写完整正文：按「段落名：内容」逐段写完所有段落，每段要有具体可用的设定细节，严禁输出“需要写成…”“围绕…补充”“可直接进入对话上下文”等指令性占位文字。你可以根据本书气质自由给出 customType、classificationReason、templateSections 和设置判断矩阵；' +
+  '世界书条目规范——条目是注入给扮演 AI 的设定片段，不是给用户看的文章：正文直接陈述设定事实，信息密度高，通常 80–300 字，按段落组织；关键词选书里会出现的人名/地名/物品/概念等具体词（2–6 个），不要用“他”“王城”这类过泛的词；常驻(constant)用于始终生效的规则/口吻，关键词触发用于按需注入的具体设定；内容与已有条目互补，不重复改写同一设定。参考示例：「标题：王城夜禁｜关键词：夜禁、宵禁｜正文：王城每日戌时起宵禁，城门紧闭、坊市禁火。巡夜禁军遇无令牌者先警告再擒拿，反抗者可就地处决；仅更夫、御医与持金牌者通行。」' +
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
@@ -1382,9 +1383,9 @@ function smartEntryParameters() {
       scope: { type: 'string', enum: ['global','character','scene','plot','style','safety'], description: '作用范围。' },
       matchStrictness: { type: 'string', enum: ['loose','normal','strict','exact'], description: '匹配严格度。' },
       reason: { type: 'string', description: '设置判断理由，展示给用户。' },
-      content: { type: 'string', description: '完整可写入的世界书正文草稿。使用 plan_smart_entry 时也要尽量传完整正文，不要只传框架或段落标题；工具只会在缺正文时做兜底补全。' },
-      key: { type: 'array', items: { type: 'string' }, description: '指定触发关键词；不传则按标题/类型推断' },
-      constant: { type: 'boolean', description: '强制常驻设置；不传则按矩阵推荐' }
+      content: { type: 'string', description: '完整可写入的世界书正文草稿——它是注入给扮演 AI 的设定片段，不是给用户看的文章：直接陈述设定事实、信息密度高、通常 80–300 字、按段落组织。严禁只给框架/段落标题/“需要写成…”等指令占位；缺失段落会自动补全。' },
+      key: { type: 'array', items: { type: 'string' }, description: '触发关键词：书里会出现的人名/地名/物品/概念等具体词，2–6 个，避免“他”“王城”等过泛词；不传则按标题/类型推断' },
+      constant: { type: 'boolean', description: '强制常驻设置（常驻用于始终生效的规则/口吻）；不传则按矩阵推荐' }
     },
     required: ['userRequest', 'content']
   };
@@ -1651,7 +1652,7 @@ async function maybeCompleteSmartContent(draft, args) {
   if (!incomplete) return draft;
   try {
     const text = await fetchCompletion([
-      { role: 'system', content: '你是世界书设定写手。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节、可触发；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
+      { role: 'system', content: '你是世界书设定写手。世界书条目是注入给扮演 AI 的设定片段，不是给用户看的文章：直接陈述设定事实，信息密度高，通常 80–300 字。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节、可触发；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
       { role: 'user', content: '条目主题：' + (draft.title || '') +
         '\n段落模板：' + (sections ? sections.join('、') : '（按内容自然分段）') +
         '\n现有内容：\n' + (content || '（无）') }
