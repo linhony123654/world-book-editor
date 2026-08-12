@@ -160,6 +160,45 @@ function bindSettings() {
     e.target.value = '';
   });
   $('exportBtn') && $('exportBtn').addEventListener('click', exportFile);
+
+  // ===== 配置秘钥：换浏览器/设备时一键复制与导入 =====
+  function buildConfigKey() {
+    const payload = { p: getProfiles(), a: activeProfileId(), v: 1 };
+    return 'wbe:' + btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  }
+  $('copyConfigKeyBtn') && $('copyConfigKeyBtn').addEventListener('click', async () => {
+    const key = buildConfigKey();
+    try {
+      await navigator.clipboard.writeText(key);
+      showToast('秘钥已复制，可在其他浏览器粘贴导入', 'success');
+    } catch {
+      prompt('复制失败，请手动复制以下秘钥：', key);
+    }
+  });
+  $('importConfigKeyBtn') && $('importConfigKeyBtn').addEventListener('click', () => {
+    const raw = ($('configKeyInput') && $('configKeyInput').value || '').trim();
+    if (!raw) return showToast('请先粘贴秘钥', 'error');
+    try {
+      const text = raw.startsWith('wbe:') ? raw.slice(4) : raw;
+      const payload = JSON.parse(decodeURIComponent(escape(atob(text.trim()))));
+      if (!payload || !Array.isArray(payload.p)) throw new Error('bad key');
+      const valid = payload.p.filter(p => p && p.id && p.url);
+      if (!valid.length) throw new Error('no profiles');
+      localStorage.setItem('wbe-api-profiles', JSON.stringify(valid));
+      if (payload.a && valid.some(p => p.id === payload.a)) {
+        localStorage.setItem('wbe-api-active', payload.a);
+        mirrorLegacy(valid.find(p => p.id === payload.a));
+      } else {
+        localStorage.setItem('wbe-api-active', valid[0].id);
+        mirrorLegacy(valid[0]);
+      }
+      refreshSettings();
+      showToast('已导入 ' + valid.length + ' 个接口配置', 'success');
+    } catch {
+      showToast('秘钥无效，请检查后重试', 'error');
+    }
+  });
+
   $('reloadBtn') && $('reloadBtn').addEventListener('click', async () => {
     const books = await loadBookList();
     const cur = (await import('./modules/state.js')).currentBookId;

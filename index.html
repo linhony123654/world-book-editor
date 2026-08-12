@@ -233,6 +233,17 @@
             </div>
             <button class="action" style="width:82px;flex:0 0 auto;" id="openApiBtn">Configure</button>
           </div>
+          <div class="setting setting-stack">
+            <div style="min-width:0">
+              <strong>配置秘钥</strong>
+              <small>换浏览器/设备时：本机点「复制」，新设备粘贴后点「导入」，自动恢复全部 AI 接口配置</small>
+            </div>
+            <input class="setting-number config-key-input" id="configKeyInput" type="text" placeholder="粘贴秘钥…" autocomplete="off" spellcheck="false" />
+            <div class="config-key-actions">
+              <button class="action" id="copyConfigKeyBtn">复制</button>
+              <button class="action primary" id="importConfigKeyBtn">导入</button>
+            </div>
+          </div>
           <div class="setting">
             <div><strong>导入世界书</strong><small>SillyTavern Lorebook JSON</small></div>
             <button class="action" id="importBtn" style="width:82px;">Import</button>
