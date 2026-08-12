@@ -51,6 +51,43 @@ function saveMemory() {
 }
 function recentTurns() { return memory.turns.slice(memory.rolledUpCount); }
 
+// ===== 对话历史持久化（按世界书保存，刷新/重开后可继续） =====
+function chatKey(bookId) { return 'wbe-chat:' + (bookId || 'unsaved'); }
+
+function loadChatHistory(bookId) {
+  try {
+    const raw = localStorage.getItem(chatKey(bookId));
+    const arr = raw ? JSON.parse(raw) : [];
+    chatMessages.length = 0;
+    if (Array.isArray(arr)) {
+      for (const m of arr) {
+        if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') {
+          chatMessages.push({ role: m.role, content: m.content });
+        }
+      }
+    }
+  } catch { chatMessages.length = 0; }
+}
+
+function saveChatHistory() {
+  try { localStorage.setItem(chatKey(logBookId), JSON.stringify(chatMessages)); } catch {}
+}
+
+const WELCOME_HTML =
+  '<div class="chat-welcome">' +
+    '<div class="chat-welcome-mark">“</div>' +
+    '<p>用自然语言编辑这本世界书。</p>' +
+    '<p class="chat-hint">例如：「新增 3 条关于王城夜禁的设定，重要的设常驻，细节用关键词触发」</p>' +
+  '</div>';
+
+// 把当前 chatMessages 渲染进聊天容器（恢复历史用）
+function renderChatHistory() {
+  const c = $('chat-messages');
+  if (!c) return;
+  c.innerHTML = WELCOME_HTML;
+  for (const m of chatMessages) appendChatMessage(m.role, m.content);
+}
+
 // 本回合工具列表浓缩成 "search_entries×3, add_entries×1"
 function summarizeTools(trace) {
   if (!trace || !trace.length) return '';
@@ -216,6 +253,8 @@ function buildMemoryInjection() {
 export function ensureMemoryLoaded() {
   if (currentBookId !== logBookId) {
     loadMemory(currentBookId);
+    loadChatHistory(currentBookId);
+    renderChatHistory();
     logBookId = currentBookId;
   }
 }
@@ -307,6 +346,7 @@ function trimHistory() {
   if (chatMessages.length > MAX_HISTORY) {
     chatMessages.splice(0, chatMessages.length - MAX_HISTORY);
   }
+  saveChatHistory();
 }
 
 // ===== 初始化聊天（杂志风 AI 屏） =====
@@ -356,17 +396,16 @@ export function initChat() {
   loadMemory(currentBookId);
   logBookId = currentBookId;
   updateMemoryBadge();
+  // 启动时恢复当前书的对话历史（刷新/重开后继续）
+  loadChatHistory(currentBookId);
+  renderChatHistory();
 
   if ($clear) {
     $clear.addEventListener('click', () => {
       chatMessages.length = 0;
+      saveChatHistory();
       const c = $('chat-messages');
-      if (c) c.innerHTML =
-        '<div class="chat-welcome">' +
-          '<div class="chat-welcome-mark">“</div>' +
-          '<p>用自然语言编辑这本世界书。</p>' +
-          '<p class="chat-hint">例如：「新增 3 条关于王城夜禁的设定，重要的设常驻，细节用关键词触发」</p>' +
-        '</div>';
+      if (c) c.innerHTML = WELCOME_HTML;
       applyChatVisibleLimit();
       import('./utils.js').then(m => m.showToast('已清空对话', 'success'));
     });
@@ -633,7 +672,7 @@ async function sendChat() {
   }
 
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
-  if (currentBookId !== logBookId) { loadMemory(currentBookId); logBookId = currentBookId; }
+  if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); logBookId = currentBookId; }
 
   appendChatMessage('user', text);
   chatMessages.push({ role: 'user', content: text });
