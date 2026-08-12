@@ -8,7 +8,7 @@ import { initBooks, renderArchives } from './modules/books.js';
 import { entries } from './modules/state.js';
 import { chooseInitialBookId } from './modules/book-session.js';
 import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
-import { checkAuth, bindAuth, showLoginScreen } from './modules/auth.js';
+import { checkAuth, bindAuth, showLoginScreen, authHeaders } from './modules/auth.js';
 
 const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings'];
 
@@ -541,7 +541,7 @@ function bindApiModal() {
       // 经本地后端代理转发，避免第三方网关缺 CORS 头被浏览器拦截
       const resp = await fetch('/api/proxy/models', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ url, key })
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
