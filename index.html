@@ -3,8 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#f3efe7" />
+  <meta name="theme-color" content="#7d2437" />
   <title>WORLD BOOK — Editorial Archive</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <link rel="stylesheet" href="style.css?v=mag1" />
 </head>
 <body>
@@ -381,5 +384,13 @@
   <input type="file" id="file-input" accept=".json" hidden />
 
   <script type="module" src="app.js?v=mag1"></script>
+  <script>
+    // PWA: Service Worker 注册（仅 HTTPS/localhost 安全上下文生效）
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    }
+  </script>
 </body>
 </html>

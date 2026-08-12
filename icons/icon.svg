@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#7d2437"/>
+  <rect x="64" y="64" width="384" height="384" rx="64" fill="none" stroke="#ead9dd" stroke-width="8" opacity="0.55"/>
+  <rect x="112" y="128" width="168" height="232" rx="12" fill="#f3efe7"/>
+  <path d="M128 128 h136 v232 h-136 z" fill="none" stroke="#171513" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M136 152 h112 M136 188 h112 M136 224 h72" stroke="#7d2437" stroke-width="14" stroke-linecap="round"/>
+  <path d="M280 152 h120 M280 188 h120 M280 224 h84" stroke="#ead9dd" stroke-width="14" stroke-linecap="round"/>
+  <rect x="112" y="288" width="288" height="44" rx="10" fill="#1f5a4b"/>
+  <text x="256" y="320" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="30" font-weight="bold" letter-spacing="6" fill="#f3efe7">WORLD BOOK</text>
+</svg>
