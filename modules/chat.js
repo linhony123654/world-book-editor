@@ -51,27 +51,139 @@ function saveMemory() {
 }
 function recentTurns() { return memory.turns.slice(memory.rolledUpCount); }
 
-// ===== 对话历史持久化（按世界书保存，刷新/重开后可继续） =====
-function chatKey(bookId) { return 'wbe-chat:' + (bookId || 'unsaved'); }
+// ===== 对话历史持久化（按世界书保存，支持多会话并行） =====
+function sessionsKey(bookId) { return 'wbe-sessions:' + (bookId || 'unsaved'); }
+function activeKey(bookId) { return 'wbe-active-session:' + (bookId || 'unsaved'); }
+
+let sessions = [];          // 当前书的会话列表
+let activeSessionId = null; // 活动会话 id
+
+function makeSession() {
+  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+}
+
+function titleFromMessages(msgs) {
+  const first = msgs.find(m => m.role === 'user');
+  if (!first) return '新对话';
+  const t = String(first.content || '').replace(/\s+/g, ' ').trim();
+  return t.length > 14 ? t.slice(0, 14) + '…' : (t || '新对话');
+}
 
 function loadChatHistory(bookId) {
   try {
-    const raw = localStorage.getItem(chatKey(bookId));
-    const arr = raw ? JSON.parse(raw) : [];
+    const raw = localStorage.getItem(sessionsKey(bookId));
+    let list = raw ? JSON.parse(raw) : null;
+    if (!Array.isArray(list)) {
+      // 迁移旧版单会话历史 wbe-chat:<bookId>
+      const oldRaw = localStorage.getItem('wbe-chat:' + (bookId || 'unsaved'));
+      const old = oldRaw ? JSON.parse(oldRaw) : [];
+      list = [];
+      if (Array.isArray(old) && old.length) {
+        const s = makeSession();
+        s.messages = old;
+        s.title = titleFromMessages(old);
+        list.push(s);
+      }
+      localStorage.setItem(sessionsKey(bookId), JSON.stringify(list));
+    }
+    sessions = list.filter(s => s && Array.isArray(s.messages));
+    const activeId = localStorage.getItem(activeKey(bookId));
+    const target = sessions.find(s => s.id === activeId) || sessions[sessions.length - 1] || null;
+    activeSessionId = target ? target.id : null;
     chatMessages.length = 0;
-    if (Array.isArray(arr)) {
-      for (const m of arr) {
-        if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') {
-          chatMessages.push({ role: m.role, content: m.content });
-        }
+    if (target) {
+      for (const m of target.messages) {
+        if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') chatMessages.push({ role: m.role, content: m.content });
       }
     }
-  } catch { chatMessages.length = 0; }
+  } catch { sessions = []; activeSessionId = null; chatMessages.length = 0; }
 }
 
 function saveChatHistory() {
-  try { localStorage.setItem(chatKey(logBookId), JSON.stringify(chatMessages)); } catch {}
+  try {
+    const cur = sessions.find(s => s.id === activeSessionId);
+    if (cur) {
+      cur.messages = chatMessages.slice();
+      cur.updatedAt = Date.now();
+      if (!cur.title || cur.title === '新对话') cur.title = titleFromMessages(chatMessages);
+    }
+    localStorage.setItem(sessionsKey(logBookId), JSON.stringify(sessions));
+    localStorage.setItem(activeKey(logBookId), activeSessionId || '');
+    renderSessionBar();
+  } catch {}
 }
+
+// ===== 会话操作 =====
+function switchSession(id) {
+  const s = sessions.find(x => x.id === id);
+  if (!s) return;
+  activeSessionId = id;
+  chatMessages.length = 0;
+  for (const m of s.messages) chatMessages.push(m);
+  saveChatHistory();
+  renderChatHistory();
+  closeSessionList();
+  import('./utils.js').then(m => m.showToast('已切换到「' + (s.title || '新对话') + '」', 'success'));
+}
+
+function newSession() {
+  const s = makeSession();
+  sessions.push(s);
+  activeSessionId = s.id;
+  chatMessages.length = 0;
+  saveChatHistory();
+  renderChatHistory();
+  closeSessionList();
+  const inp = $('chat-input');
+  if (inp) inp.focus();
+}
+
+function deleteSession(id) {
+  const idx = sessions.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  sessions.splice(idx, 1);
+  if (activeSessionId === id) {
+    const next = sessions[sessions.length - 1] || sessions[0] || null;
+    activeSessionId = next ? next.id : null;
+    chatMessages.length = 0;
+    if (next) for (const m of next.messages) chatMessages.push(m);
+  }
+  saveChatHistory();
+  renderChatHistory();
+  renderSessionList();
+}
+
+function renderSessionBar() {
+  const el = $('sessionTitle');
+  if (el) {
+    const s = sessions.find(x => x.id === activeSessionId);
+    el.textContent = (s && s.title) ? s.title : '新对话';
+  }
+}
+
+function renderSessionList() {
+  const listEl = $('sessionList');
+  if (!listEl) return;
+  if (!sessions.length) {
+    listEl.innerHTML = '<div class="session-empty">还没有会话，点「+ 新建会话」开一个。</div>';
+    return;
+  }
+  listEl.innerHTML = sessions.slice().sort((a, b) => b.updatedAt - a.updatedAt).map(s => {
+    const active = s.id === activeSessionId ? ' session-item-active' : '';
+    const t = new Date(s.updatedAt);
+    const ts = t.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return '<div class="session-item' + active + '" data-session="' + s.id + '">' +
+      '<div class="session-item-main">' +
+        '<strong>' + escHtml(s.title || '新对话') + '</strong>' +
+        '<small>' + s.messages.length + ' 条消息 · ' + ts + '</small>' +
+      '</div>' +
+      '<button class="session-del" data-del="' + s.id + '" aria-label="删除会话">✕</button>' +
+    '</div>';
+  }).join('');
+}
+
+function openSessionList() { renderSessionList(); const m = $('sessionModal'); if (m) m.classList.add('open'); }
+function closeSessionList() { const m = $('sessionModal'); if (m) m.classList.remove('open'); }
 
 const WELCOME_HTML =
   '<div class="chat-welcome">' +
@@ -255,6 +367,7 @@ export function ensureMemoryLoaded() {
     loadMemory(currentBookId);
     loadChatHistory(currentBookId);
     renderChatHistory();
+    renderSessionBar();
     logBookId = currentBookId;
   }
 }
@@ -399,6 +512,24 @@ export function initChat() {
   // 启动时恢复当前书的对话历史（刷新/重开后继续）
   loadChatHistory(currentBookId);
   renderChatHistory();
+  renderSessionBar();
+
+  // 多会话：会话栏 + 会话列表
+  const $sessionListBtn = $('sessionListBtn');
+  if ($sessionListBtn) $sessionListBtn.addEventListener('click', openSessionList);
+  const $newSessionBtn = $('newSessionBtn');
+  if ($newSessionBtn) $newSessionBtn.addEventListener('click', newSession);
+  const $sessionNewBtn = $('sessionNewBtn');
+  if ($sessionNewBtn) $sessionNewBtn.addEventListener('click', newSession);
+  const $sessionModal = $('sessionModal');
+  if ($sessionModal) {
+    $sessionModal.addEventListener('click', (e) => {
+      const del = e.target.closest('.session-del');
+      if (del) { e.stopPropagation(); deleteSession(del.dataset.del); return; }
+      const item = e.target.closest('.session-item');
+      if (item) switchSession(item.dataset.session);
+    });
+  }
 
   if ($clear) {
     $clear.addEventListener('click', () => {
@@ -672,7 +803,7 @@ async function sendChat() {
   }
 
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
-  if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); logBookId = currentBookId; }
+  if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); renderSessionBar(); logBookId = currentBookId; }
 
   appendChatMessage('user', text);
   chatMessages.push({ role: 'user', content: text });

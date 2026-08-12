@@ -127,6 +127,13 @@
           </button>
         </div>
       </header>
+      <div class="session-bar">
+        <button class="session-bar-btn" id="sessionListBtn">
+          <span class="session-caret">▾</span>
+          <span id="sessionTitle">新对话</span>
+        </button>
+        <button class="session-new" id="newSessionBtn" aria-label="新建会话">＋</button>
+      </div>
       <div class="chat-stream" id="chat-messages">
         <div class="chat-welcome">
           <div class="chat-welcome-mark">“</div>
@@ -331,6 +338,18 @@
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr">
         <button class="action" id="cancelSmartDraftBtn">取消</button>
         <button class="action primary" id="commitSmartDraftBtn">确认创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 会话列表 -->
+  <div class="modal" id="sessionModal">
+    <div class="sheet sheet-scroll">
+      <div class="mini">Sessions</div>
+      <h3>对话会话</h3>
+      <div class="session-list" id="sessionList"></div>
+      <div class="sheet-actions">
+        <button class="action primary" id="sessionNewBtn">＋ 新建会话</button>
       </div>
     </div>
   </div>
