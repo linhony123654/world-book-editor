@@ -451,6 +451,9 @@ function bindVersions() {
           '<div class="version-main">' +
             '<strong>#' + v.id + (v.kind === 'manual' ? ' <span class="version-tag">手动</span>' : '') + '</strong>' +
             '<small>' + fmtTime(v.created_at) + ' · ' + v.entry_count + ' 条' + (v.note ? ' · ' + escHtml(v.note) : '') + '</small>' +
+            (Array.isArray(v.titles) && v.titles.length
+              ? '<span class="version-titles">' + v.titles.map(t => escHtml(t)).join('、') + (v.entry_count > 3 ? '…' : '') + '</span>'
+              : '') +
           '</div>' +
           '<div class="version-actions">' +
             '<button class="action version-preview" data-preview="' + v.id + '">预览</button>' +

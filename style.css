@@ -565,6 +565,7 @@ svg { display: block; }
 .version-main { min-width: 0; flex: 1; }
 .version-main strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 14px; font-weight: 400; }
 .version-main small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.version-titles { display: block; margin-top: 5px; color: var(--ink); font-size: 10px; line-height: 1.5; opacity: .85; }
 .version-tag { color: var(--gold); font-size: 9px; font-weight: 700; }
 .version-actions { display: flex; gap: 6px; flex: none; }
 .version-actions .action { width: auto; padding: 4px 10px; min-height: 0; height: auto; font-size: 10px; }

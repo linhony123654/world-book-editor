@@ -77,8 +77,16 @@ function snapshotVersion(bookId, data, entryCount, kind, note) {
 
 // ===== 版本 API =====
 app.get('/api/books/:id/versions', authRequired, (req, res) => {
-  const rows = db.prepare('SELECT id, entry_count, kind, note, created_at FROM book_versions WHERE book_id = ? ORDER BY id DESC LIMIT 50').all(req.params.id);
-  res.json(rows);
+  const rows = db.prepare('SELECT id, entry_count, kind, note, data, created_at FROM book_versions WHERE book_id = ? ORDER BY id DESC LIMIT 50').all(req.params.id);
+  const list = rows.map(r => {
+    let titles = [];
+    try {
+      const data = JSON.parse(r.data);
+      titles = Object.values(data.entries || {}).slice(0, 3).map(e => String(e.comment || '(无标题)'));
+    } catch {}
+    return { id: r.id, entry_count: r.entry_count, kind: r.kind, note: r.note, created_at: r.created_at, titles };
+  });
+  res.json(list);
 });
 
 app.get('/api/books/:id/versions/:vid', authRequired, (req, res) => {
