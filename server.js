@@ -44,8 +44,67 @@ db.exec(`
     user_id INTEGER NOT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS book_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    entry_count INTEGER DEFAULT 0,
+    kind TEXT DEFAULT 'auto',
+    note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
   )
 `);
+
+// ===== 版本历史：保存时自动快照（每本书保留最近 30 个 auto 版本） =====
+const MAX_AUTO_VERSIONS = 30;
+
+function snapshotVersion(bookId, data, entryCount, kind, note) {
+  const latest = db.prepare('SELECT data FROM book_versions WHERE book_id = ? ORDER BY id DESC LIMIT 1').get(bookId);
+  const json = JSON.stringify(data);
+  if (latest && latest.data === json) return false; // 内容没变不存
+  db.prepare('INSERT INTO book_versions (book_id, data, entry_count, kind, note) VALUES (?, ?, ?, ?, ?)')
+    .run(bookId, json, entryCount, kind || 'auto', note || '');
+  // 清理：只清 auto，保留 manual
+  const autos = db.prepare('SELECT id FROM book_versions WHERE book_id = ? AND kind = ? ORDER BY id DESC').all(bookId, 'auto');
+  if (autos.length > MAX_AUTO_VERSIONS) {
+    const keep = new Set(autos.slice(0, MAX_AUTO_VERSIONS).map(r => r.id));
+    const del = autos.filter(r => !keep.has(r.id)).map(r => r.id);
+    if (del.length) db.prepare('DELETE FROM book_versions WHERE id IN (' + del.join(',') + ')').run();
+  }
+  return true;
+}
+
+// ===== 版本 API =====
+app.get('/api/books/:id/versions', authRequired, (req, res) => {
+  const rows = db.prepare('SELECT id, entry_count, kind, note, created_at FROM book_versions WHERE book_id = ? ORDER BY id DESC LIMIT 50').all(req.params.id);
+  res.json(rows);
+});
+
+app.get('/api/books/:id/versions/:vid', authRequired, (req, res) => {
+  const row = db.prepare('SELECT * FROM book_versions WHERE id = ? AND book_id = ?').get(req.params.vid, req.params.id);
+  if (!row) return res.status(404).json({ error: '版本不存在' });
+  res.json({ id: row.id, data: JSON.parse(row.data), entry_count: row.entry_count, kind: row.kind, note: row.note, created_at: row.created_at });
+});
+
+app.post('/api/books/:id/rollback', authRequired, (req, res) => {
+  const bookId = req.params.id;
+  const vid = Number((req.body || {}).vid);
+  const note = String((req.body || {}).note || '').trim();
+  const version = db.prepare('SELECT * FROM book_versions WHERE id = ? AND book_id = ?').get(vid, bookId);
+  if (!version) return res.status(404).json({ error: '版本不存在' });
+  const current = db.prepare('SELECT data FROM world_books WHERE id = ?').get(bookId);
+  // 回滚前备份当前状态（防误回滚丢数据）
+  if (current) {
+    const cur = JSON.parse(current.data);
+    snapshotVersion(bookId, cur, Object.keys(cur.entries || {}).length, 'auto', '回滚前快照');
+  }
+  const data = JSON.parse(version.data);
+  const entryCount = Object.keys(data.entries || {}).length;
+  db.prepare("UPDATE world_books SET data = ?, entry_count = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(data), entryCount, bookId);
+  res.json({ ok: true, entry_count: entryCount, note: note || ('回滚到版本 #' + vid) });
+});
 
 // ===== 认证：scrypt 密码哈希 + 30 天 token 会话 =====
 function hashPassword(pw) {
@@ -235,6 +294,7 @@ app.put('/api/books/:id', (req, res) => {
   updates.push('data = ?', 'entry_count = ?', "updated_at = datetime('now')");
   params.push(JSON.stringify(data), entryCount, req.params.id);
   db.prepare(`UPDATE world_books SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  snapshotVersion(req.params.id, data, entryCount, 'auto', '');
   res.json({ ok: true, entry_count: entryCount });
 });
 

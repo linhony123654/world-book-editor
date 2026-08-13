@@ -264,6 +264,13 @@
               <button class="action danger" id="logoutBtn">退出登录</button>
             </div>
           </div>
+          <div class="setting">
+            <div style="min-width:0;flex:1">
+              <strong>历史版本</strong>
+              <small id="versionStatusLabel">当前书自动保存快照，可查看与回滚</small>
+            </div>
+            <button class="action" style="width:82px;flex:0 0 auto;" id="versionsBtn">查看</button>
+          </div>
           <div class="setting" id="apiConfigRow">
             <div style="min-width:0;flex:1">
               <strong>AI 接口</strong>
@@ -393,6 +400,19 @@
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr">
         <button class="action" id="cancelSmartDraftBtn">取消</button>
         <button class="action primary" id="commitSmartDraftBtn">确认创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 历史版本 -->
+  <div class="modal" id="versionsModal">
+    <div class="sheet sheet-scroll">
+      <div class="mini">Version history</div>
+      <h3>历史版本</h3>
+      <p class="memory-note">当前书「<strong id="versionsBookName">…</strong>」的自动快照：每次内容变化时保存一版（最多保留最近 30 个）。回滚前会自动备份当前状态。</p>
+      <div class="version-list" id="versionsList"></div>
+      <div class="sheet-actions">
+        <button class="action" data-close-modal="versionsModal">关闭</button>
       </div>
     </div>
   </div>

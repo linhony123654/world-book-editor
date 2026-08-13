@@ -528,6 +528,20 @@ svg { display: block; }
 .setting strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 15px; font-weight: 400; }
 .setting small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
 
+/* ===== 历史版本 ===== */
+.version-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.version-empty { padding: 18px 0; color: var(--muted); font-size: 12px; text-align: center; }
+.version-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+}
+.version-main { min-width: 0; flex: 1; }
+.version-main strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 14px; font-weight: 400; }
+.version-main small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.version-tag { color: var(--gold); font-size: 9px; font-weight: 700; }
+.version-actions { display: flex; gap: 6px; flex: none; }
+.version-actions .action { width: auto; padding: 4px 10px; min-height: 0; height: auto; font-size: 10px; }
+
 /* ===== 破限预设 ===== */
 .jb-preset-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
 .jb-preset {
