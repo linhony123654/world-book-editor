@@ -324,7 +324,8 @@ const JB_PRESETS = [
 function bindVersions() {
   const openBtn = $('versionsBtn');
   const modal = $('versionsModal');
-  if (!openBtn || !modal) return;
+  const list = $('versionsList');
+  if (!openBtn || !modal || !list) return;
 
   async function loadVersions() {
     const bid = currentBookId;
@@ -341,8 +342,6 @@ function bindVersions() {
   openBtn.addEventListener('click', async () => {
     const nameEl = $('versionsBookName');
     if (nameEl) nameEl.textContent = ($('file-name') && $('file-name').textContent) || '未命名';
-    const list = $('versionsList');
-    if (!list) return;
     list.innerHTML = '<div class="version-empty">加载中…</div>';
     modal.classList.add('open');
     try {
@@ -368,7 +367,7 @@ function bindVersions() {
     }
   });
 
-  list && list.addEventListener('click', async (e) => {
+  list.addEventListener('click', async (e) => {
     const bid = currentBookId;
     if (bid == null) return;
     const previewBtn = e.target.closest('.version-preview');
