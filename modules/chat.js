@@ -31,7 +31,7 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   'web_search 使用规则——仅在需要现实世界资料时调用（用户要求查证历史/地理/文化/法律/科技等真实知识，或写作需要现实依据时）；世界书内部内容一律用 search_entries 查，不要联网；纯虚构创作且用户未要求查证时不要调用；单回合最多调用 5 次；结果需甄别，提炼可用信息融入设定，不要照抄原文。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。' +
   '关键词冲突处理规则——check_entries 报告里的“[关键词共享]”不是错误：两条目共用关键词但内容不重叠时（如人物与其装备共享人名），是有意的互补设计，必须保留，不要改动。只有“[关键词冲突]”（内容高度相似）才需要处理。处理方式优先合并或调整新增的条目，禁止擅自删除/修改已有条目的关键词——那会让该条目失去触发；确需修改时先向用户说明影响并得到确认。';
-const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','web_search','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
+const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','web_search','cleanup_book','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
 const smartDraftState = createSmartDraftState();
 
 // ===== 分层记忆：回合小总结 + AI 大总结，按世界书持久化 =====
@@ -625,12 +625,16 @@ function resendLast() {
   sendChat(userText);
 }
 
-// ===== 一键整理全书：发预置指令给 AI（先体检出计划，确认后执行） =====
-const CLEANUP_COMMAND = '请整理当前世界书。流程：1) 先调 get_book_info 和 check_entries 做全面体检；2) 输出完整整改计划——逐项列出条目、问题、建议处理方式（空正文用智能写作补全 / 重复条目用 merge_entries 合并 / 无关键词且非常驻的失效条目建议补关键词或删除 / 关键词过短给替换建议 / 标题重复建议合并），只列计划不要执行；3) 等我回复确认后再开始执行；4) 执行时优先用批量工具，同类改动一次完成，处理修改类条目用 plan_smart_entry 预览；5) 全部完成后总结处理结果与剩余待定项。';
-
-export function requestBookCleanup() {
-  if (isSending) { import('./utils.js').then(m => m.showToast('AI 正在忙，稍后再试', 'error')); return; }
-  sendChat(CLEANUP_COMMAND, true);
+// ===== 一键整理全书：体检 + 输出整改计划（执行需用户确认） =====
+function toolCleanupBook() {
+  const report = toolCheckEntries();
+  const info = toolBookInfo();
+  return {
+    summary: '体检完成：' + report.summary + '（' + info.summary + '）',
+    detail: '『当前书概览』\n' + info.detail.split('\n').slice(0, 4).join('\n') +
+      '\n\n『体检报告』\n' + report.detail +
+      '\n\n请根据上述报告输出逐项整改计划（条目、问题、处理方式），等待用户确认后再执行修改。'
+  };
 }
 
 // ===== 流式 SSE 解析 =====
@@ -868,7 +872,7 @@ function setSendBusy(busy) {
 }
 
 // ===== sendChat =====
-async function sendChat(prevText, forcePush) {
+async function sendChat(prevText) {
   if (isSending) return; // 防止重复发送
   const input = $('chat-input');
   const text = prevText != null ? prevText : (input ? input.value.trim() : '');
@@ -891,7 +895,7 @@ async function sendChat(prevText, forcePush) {
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
   if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); logBookId = currentBookId; }
 
-  if (prevText == null || forcePush) {
+  if (prevText == null) {
     appendChatMessage('user', text);
     chatMessages.push({ role: 'user', content: text });
     trimHistory();
@@ -1369,6 +1373,14 @@ function getTools() {
     {
       type: 'function',
       function: {
+        name: 'cleanup_book',
+        description: '对当前世界书做全面体检并输出整改计划。本地执行全书检查（空正文/永不触发/关键词过短或冲突/标题重复），然后你必须输出逐项整改计划（条目、问题、建议处理方式：补全/合并/补关键词/删除），等待用户确认后再执行修改。输出计划前禁止调用任何修改类工具（edit/delete/merge/batch_edit 等）。用户要求“整理/体检/看看这本书有什么问题”时调用。',
+        parameters: { type: 'object', properties: {} }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'undo_last',
         description: '撤销对世界书的修改（新增/删除/编辑/批量/复制等），恢复到操作前的状态；steps 大于 1 时一次回退多步',
         parameters: {
@@ -1662,6 +1674,7 @@ async function executeTool(name, args) {
     case 'test_triggers': return toolTestTriggers(args || {});
     case 'export_book': return toolExportBook();
     case 'web_search': return await toolWebSearch(args || {});
+    case 'cleanup_book': return toolCleanupBook();
     case 'undo_last': return toolUndo(args);
     case 'get_book_info': return toolBookInfo();
     case 'list_books': return await toolListBooks();

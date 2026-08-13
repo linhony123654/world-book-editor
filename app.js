@@ -3,7 +3,7 @@ import { $, escHtml, escAttr, showToast } from './modules/utils.js';
 import { loadBookList, loadBook, importFile, exportFile, autoSave, apiRequest } from './modules/api.js';
 import { renderSidebar, initSidebar } from './modules/sidebar.js';
 import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
-import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit, requestBookCleanup } from './modules/chat.js';
+import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
 import { initBooks, renderArchives } from './modules/books.js';
 import { entries, currentBookId, worldBook } from './modules/state.js';
 import { chooseInitialBookId } from './modules/book-session.js';
@@ -100,13 +100,6 @@ async function bootApp() {
   bindJbPresets();
   bindVersions();
   bindModalClose();
-
-  // 一键整理全书：切到 AI 对话并发送整理指令
-  const cleanupBtn = $('cleanupBtn');
-  if (cleanupBtn) cleanupBtn.addEventListener('click', () => {
-    setScreen('chat');
-    setTimeout(() => requestBookCleanup(), 300);
-  });
 
   initSidebar(onSelectEntry, setScreen);
   initChat();
