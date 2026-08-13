@@ -588,6 +588,14 @@ export function initChat() {
   if ($draftModal) $draftModal.addEventListener('modal:closed', discardActiveSmartDraft);
 }
 
+// 从工具参数里取草稿标题（预览中断时用）
+function draftTitleOf(toolName, args) {
+  try {
+    const a = typeof args === 'string' ? JSON.parse(args) : (args || {});
+    return (a && a.title) || (a && a.userRequest ? String(a.userRequest).slice(0, 16) : '');
+  } catch { return ''; }
+}
+
 // ===== 重新生成：删除最后一条 AI 回复，用同一条用户消息重发 =====
 function attachResendBtn(msgEl) {
   if (!msgEl || msgEl.querySelector('.chat-resend')) return;
@@ -922,6 +930,12 @@ async function sendChat(prevText) {
           turnTrace.push(tc.function.name + ': ' + r.summary);
           appendChatMessage('tool', tc.function.name + ': ' + r.summary);
           messages.push({ role: 'tool', tool_call_id: tc.id, content: r.detail });
+          if (r.stop) {
+            // 预览类工具（plan_smart_entry）：中断循环，等待用户在弹窗确认，禁止 AI 继续创建
+            chatMessages.push({ role: 'assistant', content: '已生成预览「' + (draftTitleOf(tc.function.name, args) || '草稿') + '」，请在弹窗中确认或取消。' });
+            trimHistory();
+            return;
+          }
         }
         continue; // 回到循环，AI 可继续调用工具或给出最终回复
 
@@ -937,6 +951,12 @@ async function sendChat(prevText) {
           turnTrace.push(tc.name + ': ' + r.summary);
           appendChatMessage('tool', tc.name + ': ' + r.summary);
           toolResultsText.push(tc.name + ' 结果: ' + r.summary + '\n' + r.detail);
+          if (r.stop) {
+            // 预览类工具：中断，等待用户确认
+            chatMessages.push({ role: 'assistant', content: '已生成预览，请在弹窗中确认或取消。' });
+            trimHistory();
+            return;
+          }
         }
 
         messages.push({ role: 'assistant', content: aiText || result.content || '' });
@@ -1123,7 +1143,7 @@ function getTools() {
       type: 'function',
       function: {
         name: 'plan_smart_entry',
-        description: '生成智能世界书条目草稿并打开预览弹窗，不写入世界书。复杂条目、递归条目、剧情钩子、隐藏设定优先用这个工具，让用户确认后再创建。参数与 create_smart_entry 相同。',
+        description: '生成智能世界书条目草稿并打开预览弹窗，不写入世界书。调用本工具后你会停止当前回合，等待用户在预览弹窗中确认或取消；用户确认后条目由前端写入。禁止在本回合继续调用 create_smart_entry 或其他工具，也不要假装条目已创建。复杂条目、递归条目、剧情钩子、隐藏设定优先用这个工具。',
         parameters: smartEntryParameters()
       }
     },
@@ -1799,7 +1819,8 @@ async function toolPlanSmartEntry(args) {
   setActiveSmartDraft(smartDraftState, record);
   renderSmartDraftModal(record);
   const detail = smartDraftDetail(completed, null) + checkRelatedEntries(args);
-  return { summary: '已生成智能条目预览「' + completed.title + '」', detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消。' };
+  // stop: true → 中断工具循环，等待用户在预览弹窗确认/取消，禁止 AI 继续创建
+  return { summary: '已生成智能条目预览「' + completed.title + '」，请在弹窗中确认', stop: true, detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消，本回合已停止。' };
 }
 
 // 检测正文是否不完整（指令性占位/段落缺失/过短），命中则让模型补全为完整正文
