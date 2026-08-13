@@ -29,7 +29,8 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
   'web_search 使用规则——仅在需要现实世界资料时调用（用户要求查证历史/地理/文化/法律/科技等真实知识，或写作需要现实依据时）；世界书内部内容一律用 search_entries 查，不要联网；纯虚构创作且用户未要求查证时不要调用；单回合最多调用 5 次；结果需甄别，提炼可用信息融入设定，不要照抄原文。' +
-  '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
+  '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。' +
+  '关键词冲突处理规则——check_entries 报告里的“[关键词共享]”不是错误：两条目共用关键词但内容不重叠时（如人物与其装备共享人名），是有意的互补设计，必须保留，不要改动。只有“[关键词冲突]”（内容高度相似）才需要处理。处理方式优先合并或调整新增的条目，禁止擅自删除/修改已有条目的关键词——那会让该条目失去触发；确需修改时先向用户说明影响并得到确认。';
 const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','web_search','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
 const smartDraftState = createSmartDraftState();
 
@@ -1505,6 +1506,7 @@ function smartEntryParameters() {
       scope: { type: 'string', enum: ['global','character','scene','plot','style','safety'], description: '作用范围。' },
       matchStrictness: { type: 'string', enum: ['loose','normal','strict','exact'], description: '匹配严格度。' },
       reason: { type: 'string', description: '设置判断理由，展示给用户。' },
+      relatedEntries: { type: 'array', items: { type: 'object', properties: { name: { type: 'string', description: '关联词条名称（正文中提到的具体地点/建筑/组织/人物/物品）' }, type: { type: 'string', description: '建议类型：location/profession/organization/character/item/law 等' }, note: { type: 'string', description: '为什么值得单独建条（一句话）' } }, required: ['name'] }, description: '关联词条：正文涉及的具体地点/建筑/部门/人物，若值得单独建条则列出。工具会检查是否已有同名条目，没有的会提示用户考虑创建。' },
       content: { type: 'string', description: '完整可写入的世界书正文草稿——它是注入给扮演 AI 的设定片段，不是给用户看的文章：直接陈述设定事实、信息密度高、按段落组织；篇幅按复杂度：小条目 80–300 字，主要人物/组织/规则等大卡可 500 字以上，完整优先。严禁只给框架/段落标题/“需要写成…”等指令占位；缺失段落会自动补全。' },
       key: { type: 'array', items: { type: 'string' }, description: '触发关键词：书里会出现的人名/地名/物品/概念等具体词，2–6 个，避免“他”“王城”等过泛词；不传则按标题/类型推断' },
       constant: { type: 'boolean', description: '强制常驻设置（常驻用于始终生效的规则/口吻）；不传则按矩阵推荐' }
@@ -1766,10 +1768,28 @@ function toolAddMany({ entries: items }) {
   return { summary: '已新增 ' + created.length + ' 条 (UID ' + uidStr + ')', detail: '新条目 UID: ' + created.join(', ') };
 }
 
+// 关联词条检查：正文涉及的实体若未建条，提示用户考虑创建（设定集联动）
+function checkRelatedEntries(args) {
+  const list = (Array.isArray(args && args.relatedEntries) ? args.relatedEntries : [])
+    .filter(r => r && String(r.name || '').trim())
+    .slice(0, 8);
+  if (!list.length) return '';
+  const existing = getAllEntries();
+  const existingNames = new Set(existing.map(e => String(e.comment || '').trim()));
+  const missing = list.filter(r => !existingNames.has(String(r.name).trim()));
+  if (!missing.length) return '\n关联词条：正文涉及 ' + list.length + ' 个实体均已有条目，无需新建。';
+  return '\n关联词条建议（现有条目中未找到，可考虑创建）：\n' + missing.map(r =>
+    '· ' + r.name + '（' + (r.type || '未知类型') + '）' + (r.note ? ' — ' + r.note : '')
+  ).join('\n');
+}
+
 async function toolCreateSmartEntry(args) {
   const draft = planWorldbookEntry(withWritingTemplate(args));
   const completed = await maybeCompleteSmartContent(draft, args);
-  return commitSmartDraft(completed);
+  const r = commitSmartDraft(completed);
+  const related = checkRelatedEntries(args);
+  if (related) r.detail += related;
+  return r;
 }
 
 async function toolPlanSmartEntry(args) {
@@ -1778,7 +1798,7 @@ async function toolPlanSmartEntry(args) {
   const record = createSmartDraftRecord(completed);
   setActiveSmartDraft(smartDraftState, record);
   renderSmartDraftModal(record);
-  const detail = smartDraftDetail(completed, null);
+  const detail = smartDraftDetail(completed, null) + checkRelatedEntries(args);
   return { summary: '已生成智能条目预览「' + completed.title + '」', detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消。' };
 }
 
@@ -2219,6 +2239,22 @@ function toolSplitEntry({ uid, parts }) {
 }
 
 // ===== 全书体检 =====
+// 内容相似度：字符 bigram Jaccard，用于区分“真冲突”与“互补共享”
+function contentSimilarity(a, b) {
+  const grams = s => {
+    const t = String(s || '').replace(/\s+/g, '');
+    if (t.length < 2) return new Set([t]);
+    const set = new Set();
+    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
+    return set;
+  };
+  const A = grams(a), B = grams(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+
 function toolCheckEntries() {
   const list = getAllEntries();
   const issues = [];
@@ -2248,7 +2284,15 @@ function toolCheckEntries() {
     for (const k of keys) {
       if (k.length <= 1) issues.push('[关键词过短] ' + tag + ' 关键词「' + k + '」只有 ' + k.length + ' 个字，容易误触发');
       const holders = (byKey.get(k.toLowerCase()) || []).filter(uid => uid !== e.uid && !list.find(x => x.uid === uid)?.disable);
-      if (holders.length) issues.push('[关键词冲突] ' + tag + ' 关键词「' + k + '」同时用于 ' + holders.map(h => '#' + h).join('、'));
+      for (const h of holders) {
+        const other = list.find(x => x.uid === h);
+        const sim = contentSimilarity(e.content, other && other.content);
+        if (sim > 0.45) {
+          issues.push('[关键词冲突] ' + tag + ' 与 #' + h + ' 共用关键词「' + k + '」且内容高度相似(' + Math.round(sim * 100) + '%)，建议合并或调整其中一条');
+        } else {
+          issues.push('[关键词共享] ' + tag + ' 与 #' + h + ' 共用关键词「' + k + '」（内容不重叠，可能是有意互补——如人物与其装备共享人名，属合理设计，可保留）');
+        }
+      }
     }
     const dupTitles = (byTitle.get(String(e.comment || '').toLowerCase()) || []).filter(uid => uid !== e.uid);
     if (dupTitles.length) issues.push('[标题重复] ' + tag + ' 与 ' + dupTitles.map(h => '#' + h).join('、') + ' 标题相同');
