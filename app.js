@@ -431,7 +431,11 @@ function bindVersions() {
     return d.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
-  openBtn.addEventListener('click', async () => {
+  openBtn.addEventListener('click', openVersions);
+  const editorVersionsBtn = $('editorVersionsBtn');
+  if (editorVersionsBtn) editorVersionsBtn.addEventListener('click', openVersions);
+
+  async function openVersions() {
     const nameEl = $('versionsBookName');
     if (nameEl) nameEl.textContent = ($('file-name') && $('file-name').textContent) || '未命名';
     list.innerHTML = '<div class="version-empty">加载中…</div>';
@@ -457,7 +461,7 @@ function bindVersions() {
     } catch (e) {
       list.innerHTML = '<div class="version-empty">加载失败: ' + escHtml(e.message) + '</div>';
     }
-  });
+  }
 
   list.addEventListener('click', async (e) => {
     const bid = currentBookId;
