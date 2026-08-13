@@ -24,6 +24,8 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   '智能写作——当用户要求创建人物、地点、组织、规则、事件、物品、关系、文风等设定条目时，复杂条目优先用 plan_smart_entry 生成预览，由用户确认后写入；用户明确要求直接创建时才用 create_smart_entry。content 必须写完整正文：按「段落名：内容」逐段写完所有段落，每段要有具体可用的设定细节，严禁输出“需要写成…”“围绕…补充”“可直接进入对话上下文”等指令性占位文字。你可以根据本书气质自由给出 customType、classificationReason、templateSections 和设置判断矩阵；' +
   '世界书条目规范——条目是注入给扮演 AI 的设定片段，不是给用户看的文章：正文直接陈述设定事实，信息密度高；篇幅按设定复杂度弹性——小条目 80–300 字，主要人物/组织/规则体系等大卡可 500–1500 字甚至更长，内容完整优先，不删细节也不注水。按段落组织；关键词选书里会出现的人名/地名/物品/概念等具体词（2–6 个），不要用“他”“王城”这类过泛的词；常驻(constant)用于始终生效的规则/口吻，关键词触发用于按需注入的具体设定；内容与已有条目互补，不重复改写同一设定。参考示例：「标题：王城夜禁｜关键词：夜禁、宵禁｜正文：王城每日戌时起宵禁，城门紧闭、坊市禁火。巡夜禁军遇无令牌者先警告再擒拿，反抗者可就地处决；仅更夫、御医与持金牌者通行。」' +
   '设定集规范——世界书条目应当像动漫/小说的设定集词条：结构完整、信息分层、可考据、中立客观。正文必须覆盖四要素：人（职业/岗位/关键人物）、地（至少 2 个具体地点）、数（价格/时间/数量/比例）、则（流程/规则/代价）。类型定制要素：医疗机构→诊室/科室分布、岗位分工、诊疗流程、收费规则；法律→适用对象、条文、处罚、执行机构；地点→空间布局、出入口、常驻人员、禁区；组织→架构、资金来源、成员数量、地盘范围；人物→身份履历、外貌、性格、能力、关系、现状。缺少要素是缺陷，必须补全。' +
+  '外观与衣着描写（人物、职业、成员相关条目必填）——按可观测细节写：上衣（款式、材质、颜色、领口/袖口）、下装、鞋、外搭；配饰（首饰、武器、随身物、身份标志）；体貌（发色瞳色、伤疤纹身、体态、惯用手）。全部是旁观者一眼可见的特征，供角色扮演直接调用，禁止“穿着得体”“气质优雅”等空泛词。' +
+  '世界观条目组织（法律/历史/地理/经济/超凡体系/文化）——同样按设定集词条组织，用分节标题、四要素、中立可考据：法律像法条（逐条列出），历史像年表（时间线+事件+影响），地理像志书（区域+地标+物产），超凡体系像教科书（原理+等级+代价+禁忌）。' +
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
   'web_search 使用规则——仅在需要现实世界资料时调用（用户要求查证历史/地理/文化/法律/科技等真实知识，或写作需要现实依据时）；世界书内部内容一律用 search_entries 查，不要联网；纯虚构创作且用户未要求查证时不要调用；单回合最多调用 5 次；结果需甄别，提炼可用信息融入设定，不要照抄原文。' +
@@ -1485,7 +1487,7 @@ function smartEntryParameters() {
     properties: {
       userRequest: { type: 'string', description: '用户原始需求，用于判断条目类型与功能' },
       title: { type: 'string', description: '条目标题；不传则从 userRequest 推断' },
-      semanticType: { type: 'string', enum: ['character','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '语义类型：character 人物 / location 具体地点 / geography 地理地貌 / organization 组织 / faction 阵营 / law 法律制度 / history 历史沿革 / economy 经济贸易 / magic 超凡体系(魔法科技) / culture 文化习俗信仰 / event 事件 / rule 通用规则 / item 物品 / concept 概念 / relationship 关系 / style 文风。不确定可不传' },
+      semanticType: { type: 'string', enum: ['character','profession','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '语义类型：character 人物 / profession 职业设定(空姐、警察、医生等，写职业本身而非具体个人) / location 具体地点 / geography 地理地貌 / organization 组织 / faction 阵营 / law 法律制度 / history 历史沿革 / economy 经济贸易 / magic 超凡体系(魔法科技) / culture 文化习俗信仰 / event 事件 / rule 通用规则 / item 物品 / concept 概念 / relationship 关系 / style 文风。不确定可不传' },
       customType: { type: 'string', description: 'AI 自定义分类，如“地下据点”“宫廷传闻”“禁术代价”“边境黑市”等' },
       functionType: { type: 'string', enum: ['keyword_trigger','constant_background','recursive_detail','voice_constraint','plot_hook','hidden_fact','conflict_fix'], description: '功能类型，不确定可不传' },
       classificationReason: { type: 'string', description: '简短说明为什么这样分类。展示给用户作为可审计理由，不要写隐藏思维链。' },
@@ -1796,7 +1798,7 @@ async function maybeCompleteSmartContent(draft, args) {
   if (!incomplete) return draft;
   try {
     const text = await fetchCompletion([
-      { role: 'system', content: '你是世界书设定写手。世界书条目应当像设定集词条：结构完整、信息分层、可考据、中立客观。正文必须覆盖四要素：人（职业/岗位/关键人物）、地（至少 2 个具体地点）、数（价格/时间/数量/比例）、则（流程/规则/代价），缺少要素是缺陷必须补全。篇幅按设定复杂度弹性——小条目 80–300 字，主要人物/组织/规则等大卡可 500–1500 字甚至更长，内容完整优先。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
+      { role: 'system', content: '你是世界书设定写手。世界书条目应当像设定集词条：结构完整、信息分层、可考据、中立客观。正文必须覆盖四要素：人（职业/岗位/关键人物）、地（至少 2 个具体地点）、数（价格/时间/数量/比例）、则（流程/规则/代价），缺少要素是缺陷必须补全。人物/职业相关条目必须写详细外观：上衣款式材质颜色、下装、鞋、外搭、配饰、体貌特征，全部是旁观者可见的细节，禁止“穿着得体”等空泛词。篇幅按设定复杂度弹性——小条目 80–300 字，大卡可 500–1500 字甚至更长。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
       { role: 'user', content: '条目主题：' + (draft.title || '') +
         '\n段落模板：' + (sections ? sections.join('、') : '（按内容自然分段）') +
         '\n现有内容：\n' + (content || '（无）') }

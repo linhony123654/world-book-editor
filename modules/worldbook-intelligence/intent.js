@@ -20,6 +20,7 @@ function inferTitle(text, semanticType) {
   if (semanticType === 'economy') return '经济体系';
   if (semanticType === 'magic') return '超凡体系';
   if (semanticType === 'culture') return '文化与习俗';
+  if (semanticType === 'profession') return '未命名职业';
   return '未命名条目';
 }
 
