@@ -1,11 +1,11 @@
 // ===== World Book Editor — 主入口（杂志风导航） =====
 import { $, escHtml, escAttr, showToast } from './modules/utils.js';
-import { loadBookList, loadBook, importFile, exportFile, autoSave } from './modules/api.js';
+import { loadBookList, loadBook, importFile, exportFile, autoSave, apiRequest } from './modules/api.js';
 import { renderSidebar, initSidebar } from './modules/sidebar.js';
 import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
 import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
 import { initBooks, renderArchives } from './modules/books.js';
-import { entries } from './modules/state.js';
+import { entries, currentBookId } from './modules/state.js';
 import { chooseInitialBookId } from './modules/book-session.js';
 import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
 import { checkAuth, bindAuth, showLoginScreen, authHeaders } from './modules/auth.js';
