@@ -625,6 +625,14 @@ function resendLast() {
   sendChat(userText);
 }
 
+// ===== 一键整理全书：发预置指令给 AI（先体检出计划，确认后执行） =====
+const CLEANUP_COMMAND = '请整理当前世界书。流程：1) 先调 get_book_info 和 check_entries 做全面体检；2) 输出完整整改计划——逐项列出条目、问题、建议处理方式（空正文用智能写作补全 / 重复条目用 merge_entries 合并 / 无关键词且非常驻的失效条目建议补关键词或删除 / 关键词过短给替换建议 / 标题重复建议合并），只列计划不要执行；3) 等我回复确认后再开始执行；4) 执行时优先用批量工具，同类改动一次完成，处理修改类条目用 plan_smart_entry 预览；5) 全部完成后总结处理结果与剩余待定项。';
+
+export function requestBookCleanup() {
+  if (isSending) { import('./utils.js').then(m => m.showToast('AI 正在忙，稍后再试', 'error')); return; }
+  sendChat(CLEANUP_COMMAND, true);
+}
+
 // ===== 流式 SSE 解析 =====
 async function* streamSSE(response) {
   const reader = response.body.getReader();
@@ -860,7 +868,7 @@ function setSendBusy(busy) {
 }
 
 // ===== sendChat =====
-async function sendChat(prevText) {
+async function sendChat(prevText, forcePush) {
   if (isSending) return; // 防止重复发送
   const input = $('chat-input');
   const text = prevText != null ? prevText : (input ? input.value.trim() : '');
@@ -883,7 +891,7 @@ async function sendChat(prevText) {
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
   if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); logBookId = currentBookId; }
 
-  if (prevText == null) {
+  if (prevText == null || forcePush) {
     appendChatMessage('user', text);
     chatMessages.push({ role: 'user', content: text });
     trimHistory();
