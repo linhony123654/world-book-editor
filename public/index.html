@@ -29,8 +29,8 @@
         <div class="login-form">
           <div class="mini" id="loginModeLabel">Sign in</div>
           <h3 id="loginTitle">登录</h3>
-          <input id="loginUsername" type="text" placeholder="用户名" autocomplete="username" />
-          <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password" />
+          <input id="loginUsername" type="text" placeholder="用户名" autocomplete="username" aria-label="用户名" />
+          <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password" aria-label="密码" />
           <p class="login-error" id="loginError" hidden></p>
           <div class="config-key-actions">
             <button class="action primary" id="loginBtn" style="flex:1">登录</button>
@@ -41,17 +41,17 @@
     </section>
 
     <!-- ===== Library ===== -->
-    <section class="screen active" id="screen-library">
+    <section class="screen" id="screen-library">
       <header class="masthead-bar">
         <button class="icon-btn" data-nav="chat" aria-label="AI 助手">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         </button>
         <div class="brand-mini">
           <strong>WORLD BOOK</strong>
           <span id="libBookName">Editorial Archive</span>
         </div>
         <button class="icon-btn" data-go="settings" aria-label="设置">
-          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .4 2l.1.1-2.8 2.8-.1-.1a1.8 1.8 0 0 0-2-.4 1.8 1.8 0 0 0-1.1 1.7V21H10v-.1A1.8 1.8 0 0 0 8.9 19a1.8 1.8 0 0 0-2 .4l-.1.1L4 16.7l.1-.1a1.8 1.8 0 0 0 .4-2A1.8 1.8 0 0 0 2.8 13H2V9h.8a1.8 1.8 0 0 0 1.7-1.1 1.8 1.8 0 0 0-.4-2L4 5.8 6.8 3l.1.1a1.8 1.8 0 0 0 2 .4A1.8 1.8 0 0 0 10 1.8V1h4v.8a1.8 1.8 0 0 0 1.1 1.7 1.8 1.8 0 0 0 2-.4l.1-.1L20 5.8l-.1.1a1.8 1.8 0 0 0-.4 2A1.8 1.8 0 0 0 21.2 9h.8v4h-.8a1.8 1.8 0 0 0-1.8 2Z"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .4 2l.1.1-2.8 2.8-.1-.1a1.8 1.8 0 0 0-2-.4 1.8 1.8 0 0 0-1.1 1.7V21H10v-.1A1.8 1.8 0 0 0 8.9 19a1.8 1.8 0 0 0-2 .4l-.1.1L4 16.7l.1-.1a1.8 1.8 0 0 0 .4-2A1.8 1.8 0 0 0 2.8 13H2V9h.8a1.8 1.8 0 0 0 1.7-1.1 1.8 1.8 0 0 0-.4-2L4 5.8 6.8 3l.1.1a1.8 1.8 0 0 0 2 .4A1.8 1.8 0 0 0 10 1.8V1h4v.8a1.8 1.8 0 0 0 1.1 1.7 1.8 1.8 0 0 0 2-.4l.1-.1L20 5.8l-.1.1a1.8 1.8 0 0 0-.4 2A1.8 1.8 0 0 0 21.2 9h.8v4h-.8a1.8 1.8 0 0 0-1.8 2Z"/></svg>
         </button>
       </header>
 
@@ -74,8 +74,8 @@
 
       <div class="toolbar">
         <label class="search">
-          <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-          <input id="searchInput" type="search" placeholder="搜索标题、关键词、内容…" />
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="searchInput" type="search" placeholder="搜索标题、关键词、内容…" aria-label="搜索条目" />
           <span class="shortcut" id="saveStateLib">已保存</span>
         </label>
         <div class="categories" id="categories">
@@ -90,7 +90,7 @@
         <span>Lead story</span>
         <strong>本期主稿</strong>
       </div>
-      <article class="feature" id="featureEntry"></article>
+      <button class="feature" id="featureEntry" type="button"></button>
 
       <div class="section-kicker">
         <span>Contents</span>
@@ -101,7 +101,7 @@
       <button class="load-more" id="loadMoreBtn" hidden>Load more entries</button>
 
       <button class="floating-add" id="newEntryBtn" aria-label="新建条目">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
     </section>
 
@@ -109,15 +109,20 @@
     <section class="screen" id="screen-editor">
       <header class="masthead-bar">
         <button class="icon-btn" data-nav="library" aria-label="返回">
-          <svg class="icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
         </button>
         <div class="brand-mini">
           <strong>EDITORIAL DESK</strong>
           <span id="saveStateEditor">已保存</span>
         </div>
-        <button class="icon-btn" id="quickSaveBtn" aria-label="保存">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
-        </button>
+        <div class="bar-actions">
+          <button class="icon-btn" id="undoBtn" aria-label="撤销">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+          </button>
+          <button class="icon-btn" id="quickSaveBtn" aria-label="保存">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+        </div>
       </header>
 
       <div class="editor-page">
@@ -138,7 +143,7 @@
     <section class="screen" id="screen-chat">
       <header class="masthead-bar">
         <button class="icon-btn" data-nav="library" aria-label="返回">
-          <svg class="icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
         </button>
         <div class="brand-mini">
           <strong>THE EDITOR</strong>
@@ -146,11 +151,11 @@
         </div>
         <div class="bar-actions">
           <button class="icon-btn" id="chatMemoryBtn" aria-label="查看记忆">
-            <svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
             <span class="mem-badge" id="memBadge" hidden>0</span>
           </button>
           <button class="icon-btn" id="chatClearBtn" aria-label="清空对话">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
           </button>
         </div>
       </header>
@@ -162,12 +167,12 @@
         </div>
       </div>
       <button class="chat-to-bottom" id="chatToBottom" aria-label="回到底部" hidden>
-        <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
       </button>
       <div class="chat-input-bar">
-        <textarea class="chat-input" id="chat-input" placeholder="给 AI 编辑下达指令…" rows="1"></textarea>
+        <textarea class="chat-input" id="chat-input" placeholder="给 AI 编辑下达指令…" rows="1" aria-label="给 AI 编辑下达指令"></textarea>
         <button class="chat-send" id="btn-send-chat" aria-label="发送">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
         </button>
       </div>
     </section>
@@ -176,7 +181,7 @@
     <section class="screen" id="screen-archives">
       <header class="masthead-bar">
         <button class="icon-btn" data-nav="library" aria-label="返回">
-          <svg class="icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
         </button>
         <div class="brand-mini">
           <strong>THE ARCHIVES</strong>
@@ -184,17 +189,17 @@
         </div>
         <div class="bar-actions">
           <button class="icon-btn" id="archiveSearchBtn" aria-label="搜索世界书">
-            <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           </button>
           <button class="icon-btn" id="newBookBtn" aria-label="新建世界书">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           </button>
         </div>
       </header>
 
       <div class="archive-page">
         <div class="archive-search" id="archiveSearchWrap" hidden>
-          <input id="archiveSearchInput" placeholder="搜索刊名…" autocomplete="off">
+          <input id="archiveSearchInput" placeholder="搜索刊名…" autocomplete="off" aria-label="搜索世界书刊名">
           <button class="archive-search-clear" id="archiveSearchClear" aria-label="清空">✕</button>
         </div>
         <div class="issue-row">
@@ -217,7 +222,7 @@
     <section class="screen" id="screen-settings">
       <header class="masthead-bar">
         <button class="icon-btn" data-nav="library" aria-label="返回">
-          <svg class="icon" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
         </button>
         <div class="brand-mini">
           <strong>SETTINGS</strong>
@@ -237,17 +242,17 @@
               <small id="themeLabel">暖纸张、墨色正文与酒红强调</small>
             </div>
             <div class="theme-pair">
-              <svg class="icon" id="themeIcon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-              <button class="switch" id="themeSwitch" aria-label="切换主题"></button>
+              <svg class="icon" id="themeIcon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+              <button class="switch" id="themeSwitch" aria-label="切换主题" role="switch" aria-checked="true"></button>
             </div>
           </div>
           <div class="setting">
             <div><strong>自动保存</strong><small>编辑后约 1.5s 自动写入数据库</small></div>
-            <button class="switch" id="autoSaveSwitch"></button>
+            <button class="switch" id="autoSaveSwitch" aria-label="自动保存" role="switch" aria-checked="true"></button>
           </div>
           <div class="setting">
             <div><strong>会话显示条数</strong><small>只折叠界面里的旧消息；0 表示显示全部</small></div>
-            <input class="setting-number" id="chatVisibleLimitInput" type="number" min="0" max="200" step="1" inputmode="numeric" />
+            <input class="setting-number" id="chatVisibleLimitInput" type="number" min="0" max="200" step="1" inputmode="numeric" aria-label="会话显示条数" />
           </div>
         </div>
 
@@ -257,8 +262,8 @@
               <strong>账号与安全</strong>
               <small>修改登录密码（所有设备需重新登录）/ 退出当前账号</small>
             </div>
-            <input class="config-key-input" id="oldPasswordInput" type="password" placeholder="旧密码" autocomplete="current-password" />
-            <input class="config-key-input" id="newPasswordInput" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
+            <input class="config-key-input" id="oldPasswordInput" type="password" placeholder="旧密码" autocomplete="current-password" aria-label="旧密码" />
+            <input class="config-key-input" id="newPasswordInput" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" aria-label="新密码" />
             <div class="config-key-actions">
               <button class="action" id="changePasswordBtn">修改密码</button>
               <button class="action danger" id="logoutBtn">退出登录</button>
@@ -277,7 +282,7 @@
               <strong>配置秘钥</strong>
               <small>换浏览器/设备时：本机点「复制」，新设备粘贴后点「导入」，自动恢复全部 AI 接口配置</small>
             </div>
-            <input class="setting-number config-key-input" id="configKeyInput" type="text" placeholder="粘贴秘钥…" autocomplete="off" spellcheck="false" />
+            <input class="setting-number config-key-input" id="configKeyInput" type="text" placeholder="粘贴秘钥…" autocomplete="off" spellcheck="false" aria-label="配置秘钥" />
             <div class="config-key-actions">
               <button class="action" id="copyConfigKeyBtn">复制</button>
               <button class="action primary" id="importConfigKeyBtn">导入</button>
@@ -302,26 +307,26 @@
     <!-- ===== bottom nav ===== -->
     <nav class="bottom-nav">
       <button class="nav active" data-nav="library">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M4 5h6v14H4zM14 5h6v14h-6z"/></svg>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6v14H4zM14 5h6v14h-6z"/></svg>
         <span>Journal</span>
       </button>
       <button class="nav" data-nav="chat">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         <span>Editor AI</span>
       </button>
       <button class="nav" data-nav="archives">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16v4H4zM5 8h14v12H5z"/><path d="M9 12h6"/></svg>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v4H4zM5 8h14v12H5z"/><path d="M9 12h6"/></svg>
         <span>Issues</span>
       </button>
     </nav>
   </main>
 
   <!-- 新建条目 -->
-  <div class="modal" id="entryModal">
+  <div class="modal" id="entryModal" role="dialog" aria-modal="true" aria-labelledby="entryModalTitle">
     <div class="sheet">
       <div class="mini">New entry</div>
-      <h3>新建世界书条目</h3>
-      <input id="newTitleInput" placeholder="输入标题，例如：王城夜间宵禁规则" />
+      <h3 id="entryModalTitle">新建世界书条目</h3>
+      <input id="newTitleInput" placeholder="输入标题，例如：王城夜间宵禁规则" aria-label="新条目标题" />
       <div class="sheet-actions">
         <button class="action" data-close-modal="entryModal">Cancel</button>
         <button class="action primary" id="createEntryBtn">Create</button>
@@ -330,11 +335,11 @@
   </div>
 
   <!-- 新建世界书 -->
-  <div class="modal" id="bookModal">
+  <div class="modal" id="bookModal" role="dialog" aria-modal="true" aria-labelledby="bookModalTitle">
     <div class="sheet">
       <div class="mini">New issue</div>
-      <h3>新建世界书</h3>
-      <input id="newBookInput" placeholder="世界书名称" />
+      <h3 id="bookModalTitle">新建世界书</h3>
+      <input id="newBookInput" placeholder="世界书名称" aria-label="世界书名称" />
       <div class="sheet-actions">
         <button class="action" data-close-modal="bookModal">Cancel</button>
         <button class="action primary" id="createBookBtn">Create</button>
@@ -343,7 +348,7 @@
   </div>
 
   <!-- AI 记忆 -->
-  <div class="modal" id="memoryModal">
+  <div class="modal" id="memoryModal" role="dialog" aria-modal="true" aria-labelledby="memModalTitle">
     <div class="sheet sheet-scroll">
       <div class="mini">Session memory</div>
       <h3 id="memModalTitle">对话与记忆</h3>
@@ -370,10 +375,10 @@
   </div>
 
   <!-- AI 写作模板 -->
-  <div class="modal" id="templateModal">
+  <div class="modal" id="templateModal" role="dialog" aria-modal="true" aria-labelledby="templateModalTitle">
     <div class="sheet sheet-scroll">
       <div class="mini">Writing template</div>
-      <h3>AI 写作模板</h3>
+      <h3 id="templateModalTitle">AI 写作模板</h3>
       <p class="memory-note">按当前世界书保存。这里写的是占位模板，例如“世界观核心：根据用户输入描述当前世界观，约 150 字”。AI 可以通过工具读取，智能条目预览也会自动参考。</p>
       <div id="templateFields"></div>
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
@@ -385,10 +390,10 @@
   </div>
 
   <!-- 智能条目预览 -->
-  <div class="modal" id="smartDraftModal">
+  <div class="modal" id="smartDraftModal" role="dialog" aria-modal="true" aria-labelledby="smartDraftTitle">
     <div class="sheet sheet-scroll">
       <div class="mini">Smart entry draft</div>
-      <h3>智能条目预览</h3>
+      <h3 id="smartDraftTitle">智能条目预览</h3>
       <div class="draft-preview" id="smartDraftPreview"></div>
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr">
         <button class="action" id="cancelSmartDraftBtn">取消</button>
@@ -398,40 +403,40 @@
   </div>
 
   <!-- API 配置 -->
-  <div class="modal" id="apiModal">
+  <div class="modal" id="apiModal" role="dialog" aria-modal="true" aria-labelledby="apiModalTitle">
     <div class="sheet sheet-scroll">
       <div class="mini">AI endpoint</div>
-      <h3>AI 接口配置</h3>
+      <h3 id="apiModalTitle">AI 接口配置</h3>
       <div class="field">
         <label>配置档案</label>
         <div class="model-row">
-          <select id="apiProfileSelectModal"></select>
+          <select id="apiProfileSelectModal" aria-label="配置档案"></select>
           <button class="action" id="newProfileBtn" style="width:64px;">＋新建</button>
         </div>
       </div>
       <div class="field">
         <label>档案名称</label>
-        <input id="apiNameInput" placeholder="例如：OpenCode / 本地代理" />
+        <input id="apiNameInput" placeholder="例如：OpenCode / 本地代理" aria-label="档案名称" />
       </div>
       <div class="field">
         <label>API 地址</label>
-        <input id="apiUrlInput" placeholder="http://127.0.0.1:8317/v1" />
+        <input id="apiUrlInput" placeholder="http://127.0.0.1:8317/v1" aria-label="API 地址" />
       </div>
       <div class="field">
         <label>API Key</label>
-        <input id="apiKeyInput" type="password" placeholder="sk-..." />
+        <input id="apiKeyInput" type="password" placeholder="sk-..." aria-label="API Key" />
       </div>
       <div class="field">
         <label>模型</label>
         <div class="model-row">
-          <select id="apiModelSelect"><option value="">-- 先拉取模型列表 --</option></select>
+          <select id="apiModelSelect" aria-label="模型"><option value="">-- 先拉取模型列表 --</option></select>
           <button class="action" id="fetchModelsBtn" style="width:72px;">Fetch</button>
         </div>
         <div class="model-status" id="modelStatus"></div>
       </div>
       <div class="field">
         <label>系统提示词</label>
-        <textarea id="apiPromptInput" rows="4" placeholder="你是一个世界书编辑助手…"></textarea>
+        <textarea id="apiPromptInput" rows="4" placeholder="你是一个世界书编辑助手…" aria-label="系统提示词"></textarea>
       </div>
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
         <button class="action danger" id="deleteProfileBtn">删除</button>
@@ -441,7 +446,20 @@
     </div>
   </div>
 
-  <div class="toast" id="toast">Saved</div>
+  <!-- 通用确认弹窗（删除等破坏性操作） -->
+  <div class="modal" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="sheet">
+      <div class="mini">Confirm</div>
+      <h3 id="confirmTitle">确认操作</h3>
+      <p class="confirm-text" id="confirmText"></p>
+      <div class="sheet-actions">
+        <button class="action" id="confirmCancelBtn" data-close-modal="confirmModal">取消</button>
+        <button class="action danger" id="confirmOkBtn">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">Saved</div>
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 

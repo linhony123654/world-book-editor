@@ -1,11 +1,11 @@
 // ===== World Book Editor — 主入口（杂志风导航） =====
-import { $, escHtml, escAttr, showToast } from './modules/utils.js';
-import { loadBookList, loadBook, importFile, exportFile, autoSave } from './modules/api.js';
+import { $, escHtml, escAttr, showToast, openModal, closeModal } from './modules/utils.js';
+import { loadBookList, loadBook, importFile, exportFile, autoSave, scheduleSave } from './modules/api.js';
 import { renderSidebar, initSidebar } from './modules/sidebar.js';
 import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
 import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
 import { initBooks, renderArchives } from './modules/books.js';
-import { entries } from './modules/state.js';
+import { entries, currentUid, restoreUndo } from './modules/state.js';
 import { chooseInitialBookId } from './modules/book-session.js';
 import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
 import { checkAuth, bindAuth, showLoginScreen } from './modules/auth.js';
@@ -98,6 +98,7 @@ async function bootApp() {
   bindSettings();
   bindApiModal();
   bindModalClose();
+  bindUndo();
 
   initSidebar(onSelectEntry, setScreen);
   initChat();
@@ -151,17 +152,47 @@ async function manualSave() {
   showToast('已保存', 'success');
 }
 
+// ===== 撤销（Ctrl/Cmd+Z 与编辑器屏「撤销」按钮） =====
+function undoLast() {
+  const label = restoreUndo();
+  if (!label) { showToast('没有可撤销的操作', 'info'); return; }
+  // 全量重渲染：侧栏 + 编辑器 + 状态
+  renderSidebar();
+  if (currentUid != null) {
+    const entry = entries.find(e => e.uid === currentUid);
+    if (entry) renderEditor(entry);
+    else renderEditorEmpty();
+  } else {
+    renderEditorEmpty();
+  }
+  showToast('已撤销: ' + label, 'success');
+  scheduleSave();
+}
+
+function bindUndo() {
+  const btn = $('undoBtn');
+  if (btn) btn.addEventListener('click', undoLast);
+  // Ctrl/Cmd+Z：文本输入框内交给浏览器自身撤销，不拦截
+  document.addEventListener('keydown', e => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    if (e.key.toLowerCase() !== 'z') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    e.preventDefault();
+    undoLast();
+  });
+}
+
 function openEntryModal() {
   const input = $('newTitleInput');
   if (input) input.value = '';
-  $('entryModal').classList.add('open');
-  if (input) input.focus();
+  openModal($('entryModal'), { focus: input });
 }
 function onCreateEntry() {
   const input = $('newTitleInput');
   const title = (input && input.value.trim()) || '';
   newEntry(title);
-  $('entryModal').classList.remove('open');
+  closeModal($('entryModal'));
   setScreen('editor');
 }
 
@@ -316,9 +347,17 @@ function refreshSettings() {
   }
   // 自动保存开关状态
   const sw = $('autoSaveSwitch');
-  if (sw) sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
+  if (sw) {
+    sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
+    syncSwitch(sw);
+  }
   const chatLimit = $('chatVisibleLimitInput');
   if (chatLimit) chatLimit.value = String(readChatVisibleLimit());
+}
+
+// 开关的 .off 与 aria-checked 保持一致
+function syncSwitch(sw) {
+  if (sw) sw.setAttribute('aria-checked', sw.classList.contains('off') ? 'false' : 'true');
 }
 
 // ===== 主题 =====
@@ -335,7 +374,10 @@ function initTheme() {
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   const sw = $('themeSwitch');
-  if (sw) sw.classList.toggle('off', theme === 'dark');
+  if (sw) {
+    sw.classList.toggle('off', theme === 'dark');
+    syncSwitch(sw);
+  }
   const label = $('themeLabel');
   if (label) label.textContent = theme === 'dark' ? '夜墨模式 · 深色背景' : '暖纸张、墨色正文与酒红强调';
   const mc = document.querySelector('meta[name="theme-color"]');
@@ -347,20 +389,17 @@ function initAutoSaveSwitch() {
   const sw = $('autoSaveSwitch');
   if (!sw) return;
   sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
+  syncSwitch(sw);
   sw.addEventListener('click', () => {
     const off = sw.classList.toggle('off');
+    syncSwitch(sw);
     localStorage.setItem('wbe-autosave', off ? 'off' : 'on');
     showToast(off ? '已关闭自动保存' : '已开启自动保存', 'success');
   });
 }
 
-// ===== 通用弹窗关闭 =====
+// ===== 通用弹窗关闭（焦点管理见 utils.js 的 Modal 工具） =====
 function bindModalClose() {
-  function closeModal(m) {
-    if (!m || !m.classList.contains('open')) return;
-    m.classList.remove('open');
-    m.dispatchEvent(new CustomEvent('modal:closed'));
-  }
   document.querySelectorAll('[data-close-modal]').forEach(btn => {
     btn.addEventListener('click', () => {
       const m = $(btn.dataset.closeModal);
@@ -405,7 +444,7 @@ function openApiModal() {
   if (!editing) editingProfileId = null; // 没有任何档案 → 进入新建态
   populateModalSelect(profiles);
   fillModalFields(editing);
-  $('apiModal').classList.add('open');
+  openModal($('apiModal'));
   if ($('apiUrlInput').value.trim() && $('apiKeyInput').value.trim()) {
     setTimeout(() => $('fetchModelsBtn').click(), 100);
   }
@@ -467,7 +506,7 @@ function bindApiModal() {
     saveProfiles(arr);
     setActiveProfile(id);   // 同时镜像到旧键供 chat.js 使用
     editingProfileId = id;
-    $('apiModal').classList.remove('open');
+    closeModal($('apiModal'));
     showToast('已保存「' + data.name + '」', 'success');
     refreshSettings();
   });

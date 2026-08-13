@@ -88,28 +88,36 @@ node server.js
 world-book-editor/
 ├── README.md
 ├── MODULES.md
-├── index.html
-├── app.js
-├── style.css
-├── server.js
-├── sample.json
-├── world-books.db
+├── server.js            # 后端：Express + SQLite + AI 代理
+├── sample.json          # 首次启动导入的示例数据
 ├── package.json
-├── tests/
-└── modules/
-    ├── api.js
-    ├── book-session.js
-    ├── books.js
-    ├── chat-view.js
-    ├── chat.js
-    ├── editor.js
-    ├── memory-summary.js
-    ├── reasoning.js
-    ├── sidebar.js
-    ├── state.js
-    ├── utils.js
-    └── worldbook-intelligence/
+├── scripts/
+│   └── backup.js        # 数据库备份脚本
+├── tests/               # node --test 单元测试
+└── public/              # 前端静态文件（唯一对外暴露目录）
+    ├── index.html
+    ├── app.js
+    ├── style.css
+    ├── sw.js
+    ├── manifest.json
+    ├── icons/
+    └── modules/
+        ├── api.js
+        ├── book-session.js
+        ├── books.js
+        ├── chat-view.js
+        ├── chat.js
+        ├── editor.js
+        ├── memory-summary.js
+        ├── reasoning.js
+        ├── sidebar.js
+        ├── state.js
+        ├── tool-names.js
+        ├── utils.js
+        └── worldbook-intelligence/
 ```
+
+> 安全说明：`server.js` 只对外暴露 `public/` 目录，后端源码、`package.json`、数据库均不可通过 HTTP 访问。
 
 ## 数据格式
 
@@ -170,9 +178,21 @@ world-book-editor/
 
 ```bash
 node --check server.js
-node --check app.js
-for f in modules/*.js modules/worldbook-intelligence/*.js; do node --check "$f" || exit 1; done
-node --test tests/*.test.mjs
+node --check public/app.js
+for f in public/modules/*.js public/modules/worldbook-intelligence/*.js; do node --check "$f" || exit 1; done
+npm test
+```
+
+## 数据库备份
+
+```bash
+node scripts/backup.js
+```
+
+备份到 `backups/`（自动保留最近 14 份）。推荐用 cron 定时执行：
+
+```
+0 3 * * * cd /home/ubuntu/World\ Book\ Editor && /usr/bin/node scripts/backup.js >> backups/backup.log 2>&1
 ```
 
 ## 配置与本地存储

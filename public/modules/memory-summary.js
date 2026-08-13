@@ -1,4 +1,6 @@
-const TOOL_NAME_RE = /\b(search_entries|get_entry|edit_entry|add_entry|add_entries|get_writing_template|update_writing_template|plan_smart_entry|create_smart_entry|delete_entry|delete_entries|batch_edit|replace_text|manage_keys|move_entry|list_entries|toggle_entry|reorder_entry|duplicate_entry|merge_entries|split_entry|check_entries|test_triggers|export_book|undo_last|get_book_info|list_books|switch_book|create_book|rename_book|delete_book)\b/g;
+import { TOOL_NAME_PATTERN } from './tool-names.js';
+
+const TOOL_NAME_RE = new RegExp('\\b(' + TOOL_NAME_PATTERN + ')\\b', 'g');
 
 export function containsToolCallSyntax(text) {
   if (!text) return false;

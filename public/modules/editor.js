@@ -1,6 +1,6 @@
 // ===== Editor 屏（杂志风：完整 42 字段，核心可见 + 高级折叠） =====
-import { escHtml, escAttr, $ } from './utils.js';
-import { worldBook, entries, currentUid, nextUid, createEntry, uidKey, setEntries } from './state.js';
+import { escHtml, escAttr, $, showConfirm } from './utils.js';
+import { worldBook, entries, currentUid, nextUid, createEntry, uidKey, setEntries, snapshotForUndo } from './state.js';
 import { scheduleSave } from './api.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
 
@@ -86,13 +86,13 @@ export function renderEditor(entry) {
   refreshLines();
 }
 
-// ===== 关键词 chips =====
+// ===== 关键词 chips（整颗 chip 即删除按钮） =====
 function kwChips(arr, cls) {
   const list = arr || [];
   if (!list.length) return '';
   return list.map(k =>
-    '<span class="keyword ' + cls + '" data-kw="' + escAttr(k) + '">' +
-    escHtml(k) + '<span class="kw-x">×</span></span>'
+    '<button type="button" class="keyword ' + cls + '" data-kw="' + escAttr(k) + '" aria-label="删除关键词 ' + escAttr(k) + '">' +
+    escHtml(k) + '<span class="kw-x">×</span></button>'
   ).join('');
 }
 
@@ -108,7 +108,8 @@ function numBox(label, field, value) {
 }
 function swRow(label, field, value) {
   return '<div class="swrow"><span>' + label + '</span>' +
-    '<button class="switch' + (value ? '' : ' off') + '" data-toggle="' + field + '"></button></div>';
+    '<button class="switch' + (value ? '' : ' off') + '" data-toggle="' + field + '"' +
+    ' role="switch" aria-checked="' + (value ? 'true' : 'false') + '" aria-label="' + escAttr(label) + '"></button></div>';
 }
 function posOptions(cur) {
   const opts = [[0,'0 · 角色定义前'],[1,'1 · 角色定义后'],[2,'2 · 作者注释前'],[3,'3 · 作者注释后'],[4,'4 · @D 注入'],[5,'5 · 对话示例']];
@@ -248,6 +249,7 @@ function bindEditorEvents(entry) {
     btn.addEventListener('click', () => {
       const field = btn.dataset.toggle;
       btn.classList.toggle('off');
+      btn.setAttribute('aria-checked', btn.classList.contains('off') ? 'false' : 'true');
       entry[field] = !btn.classList.contains('off');
       if (['disable', 'constant'].includes(field)) renderSidebar();
       scheduleSave();
@@ -288,8 +290,8 @@ function bindKwRemove(containerId, entry, field) {
   const box = $(containerId);
   if (!box) return;
   box.querySelectorAll('.keyword').forEach(chip => {
-    chip.addEventListener('click', (e) => {
-      if (!e.target.classList.contains('kw-x')) return;
+    chip.addEventListener('click', () => {
+      snapshotForUndo('删除关键词');
       const k = chip.dataset.kw;
       entry[field] = (entry[field] || []).filter(x => x !== k);
       renderEditor(entry);
@@ -343,11 +345,18 @@ function _addEntry(title, m) {
 }
 
 // ===== 删除条目 =====
-export function deleteEntry() {
+export async function deleteEntry() {
   if (currentUid == null || !worldBook) return;
   const entry = entries.find(e => e.uid === currentUid);
   const title = entry ? (entry.comment || 'UID ' + currentUid) : '#' + currentUid;
-  if (!confirm('确定删除「' + title + '」？')) return;
+  const ok = await showConfirm({
+    title: '删除条目',
+    message: '确定删除「' + title + '」？该操作不可撤销，但可用 Ctrl/Cmd+Z 撤销。',
+    okText: '删除',
+    danger: true
+  });
+  if (!ok) return;
+  snapshotForUndo('删除条目');
   delete worldBook.entries[uidKey(currentUid)];
   const remaining = entries.filter(e => e.uid !== currentUid);
   setEntries(remaining);
@@ -364,6 +373,7 @@ export function duplicateEntry() {
   if (currentUid == null || !worldBook) return;
   const src = entries.find(e => e.uid === currentUid);
   if (!src) return;
+  snapshotForUndo('复制条目');
   const uid = nextUid();
   const copy = JSON.parse(JSON.stringify(src));
   copy.uid = uid;

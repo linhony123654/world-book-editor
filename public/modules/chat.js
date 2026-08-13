@@ -1,5 +1,6 @@
 // ===== AI 聊天 =====
-import { escHtml, $ } from './utils.js';
+import { escHtml, escAttr, escUrl, $ } from './utils.js';
+import { TOOL_NAMES, TOOL_NAME_PATTERN } from './tool-names.js';
 import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo } from './state.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
 import { renderEditor, renderEditorEmpty } from './editor.js';
@@ -26,13 +27,18 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
-const TOOL_NAMES = ['search_entries','get_entry','edit_entry','add_entry','add_entries','get_writing_template','update_writing_template','plan_smart_entry','create_smart_entry','delete_entry','delete_entries','batch_edit','replace_text','manage_keys','move_entry','list_entries','toggle_entry','reorder_entry','duplicate_entry','merge_entries','split_entry','check_entries','test_triggers','export_book','undo_last','get_book_info','list_books','switch_book','create_book','rename_book','delete_book'];
+// 工具调用文本格式的正则都从 TOOL_NAME_PATTERN 派生，名单单一来源，避免多处重复漂移
+const TOOL_CALL_JSON_RE = new RegExp('\\{\\s*"name"\\s*:\\s*"(' + TOOL_NAME_PATTERN + ')"\\s*,\\s*"arguments"\\s*:\\s*(\\{[\\s\\S]*?\\})\\s*\\}', 'g');
+const TOOL_FN_RE = new RegExp('\\b(' + TOOL_NAME_PATTERN + ')\\s*\\(([^)]*)\\)', 'g');
+const TOOL_CALL_JSON_STRIP_RE = new RegExp('\\{\\s*"name"\\s*:\\s*"(' + TOOL_NAME_PATTERN + ')"\\s*,\\s*"arguments"\\s*:\\s*\\{[\\s\\S]*?\\}\\s*\\}', 'g');
 const smartDraftState = createSmartDraftState();
 
 // ===== 分层记忆：回合小总结 + AI 大总结，按世界书持久化 =====
 // turns: 每回合一条小总结 {user, actionSummary, toolSummary, toolDetail[], reply, ts}
 // rollups: 每满 ROLLUP_EVERY 条小总结，AI 浓缩成一段阶段总结 {from, to, text}
 // rolledUpCount: 已被大总结覆盖的 turns 前缀数量
+const MAX_MEMORY_TURNS = 100;   // 记忆小总结保留上限（超出丢弃最旧的）
+const MAX_MEMORY_ROLLUPS = 10;  // 阶段总结保留上限
 let memory = { turns: [], rollups: [], rolledUpCount: 0 };
 let logBookId = null;     // 当前已加载记忆的 bookId
 let isRollingUp = false;  // 大总结进行中锁
@@ -40,22 +46,65 @@ const ROLLUP_EVERY = 10;  // 每满 N 条小总结整合一次
 
 function memKey(bookId) { return 'wbe-memory:' + (bookId || 'unsaved'); }
 function emptyMemory() { return { turns: [], rollups: [], rolledUpCount: 0 }; }
+
+// 把损坏的本地数据备份到 wbe-corrupt-backup，避免坏数据被静默重置丢失
+function backupCorruptData(key, raw) {
+  try {
+    if (raw == null) return;
+    let backups = {};
+    try {
+      const old = JSON.parse(localStorage.getItem('wbe-corrupt-backup') || '{}');
+      if (old && typeof old === 'object') backups = old;
+    } catch (e) {}
+    backups[key] = String(raw).slice(0, 500000); // 限制备份大小，防止备份本身撑爆存储
+    localStorage.setItem('wbe-corrupt-backup', JSON.stringify(backups));
+  } catch (e) {
+    console.warn('[WBE] 备份损坏数据失败:', key, e);
+  }
+}
+
 function loadMemory(bookId) {
   try {
     const raw = localStorage.getItem(memKey(bookId));
     const m = raw ? JSON.parse(raw) : null;
     memory = m ? { turns: m.turns || [], rollups: m.rollups || [], rolledUpCount: m.rolledUpCount || 0 } : emptyMemory();
-  } catch { memory = emptyMemory(); }
+  } catch (e) {
+    console.warn('[WBE] 记忆数据损坏，已重置:', memKey(bookId), e);
+    backupCorruptData(memKey(bookId), localStorage.getItem(memKey(bookId)));
+    memory = emptyMemory();
+    import('./utils.js').then(m => m.showToast('本书记忆数据损坏，已备份并重置', 'error'));
+  }
   updateMemoryBadge();
 }
 function saveMemory() {
-  try { localStorage.setItem(memKey(logBookId), JSON.stringify(memory)); } catch {}
+  try {
+    // 上限控制：超出丢弃最旧的；优先丢弃已被大总结覆盖的最旧部分，保持 rolledUpCount 语义
+    if (memory.turns.length > MAX_MEMORY_TURNS) {
+      const excess = memory.turns.length - MAX_MEMORY_TURNS;
+      const dropFromRolled = Math.min(excess, memory.rolledUpCount);
+      if (dropFromRolled > 0) {
+        memory.turns.splice(0, dropFromRolled);
+        memory.rolledUpCount -= dropFromRolled;
+      }
+      if (memory.turns.length > MAX_MEMORY_TURNS) {
+        memory.turns.splice(0, memory.turns.length - MAX_MEMORY_TURNS);
+        if (memory.rolledUpCount > memory.turns.length) memory.rolledUpCount = memory.turns.length;
+      }
+    }
+    if (memory.rollups.length > MAX_MEMORY_ROLLUPS) memory.rollups = memory.rollups.slice(-MAX_MEMORY_ROLLUPS);
+    localStorage.setItem(memKey(logBookId), JSON.stringify(memory));
+  } catch (e) {
+    console.warn('[WBE] 记忆保存失败:', e);
+    import('./utils.js').then(m => m.showToast('记忆保存失败（本地存储可能已满）', 'error'));
+  }
 }
 function recentTurns() { return memory.turns.slice(memory.rolledUpCount); }
 
 // ===== 对话历史持久化（按世界书保存，支持多会话并行） =====
 function sessionsKey(bookId) { return 'wbe-sessions:' + (bookId || 'unsaved'); }
 function activeKey(bookId) { return 'wbe-active-session:' + (bookId || 'unsaved'); }
+
+const MAX_SESSIONS = 20; // 每本书最多保留的会话数（超出丢弃最旧不活跃的）
 
 let sessions = [];          // 当前书的会话列表
 let activeSessionId = null; // 活动会话 id
@@ -98,7 +147,11 @@ function loadChatHistory(bookId) {
         if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') chatMessages.push({ role: m.role, content: m.content });
       }
     }
-  } catch { sessions = []; activeSessionId = null; chatMessages.length = 0; }
+  } catch (e) {
+    console.warn('[WBE] 会话历史数据损坏，已重置:', sessionsKey(bookId), e);
+    backupCorruptData(sessionsKey(bookId), localStorage.getItem(sessionsKey(bookId)));
+    sessions = []; activeSessionId = null; chatMessages.length = 0;
+  }
 }
 
 function saveChatHistory() {
@@ -109,13 +162,43 @@ function saveChatHistory() {
       cur.updatedAt = Date.now();
       if (!cur.aiTitled && (!cur.title || cur.title === '新对话')) cur.title = titleFromMessages(chatMessages);
     }
+    // 会话数上限：保留最近更新的 MAX_SESSIONS 个（活动会话始终保留）
+    if (sessions.length > MAX_SESSIONS) {
+      const active = sessions.find(s => s.id === activeSessionId);
+      const others = sessions.filter(s => s.id !== activeSessionId)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        .slice(0, MAX_SESSIONS - (active ? 1 : 0));
+      sessions.length = 0;
+      if (active) sessions.push(active);
+      sessions.push(...others);
+    }
     localStorage.setItem(sessionsKey(logBookId), JSON.stringify(sessions));
     localStorage.setItem(activeKey(logBookId), activeSessionId || '');
-  } catch {}
+  } catch (e) {
+    console.warn('[WBE] 会话历史保存失败:', e);
+    import('./utils.js').then(m => m.showToast('会话保存失败（本地存储可能已满）', 'error'));
+  }
 }
 
 // ===== 会话操作 =====
+// 在途流式请求的 AbortController：切换会话/清空对话/换书时中断，
+// 避免流结束后把回复写进错误的会话；也用于 120s 超时自动停止。
+let activeChatAbort = null; // { controller, reason: 'switch'|'timeout'|null, sessionId }
+
+function abortActiveChat(reason) {
+  if (activeChatAbort) {
+    activeChatAbort.reason = reason || 'switch';
+    try { activeChatAbort.controller.abort(); } catch (e) {}
+  }
+}
+
+// 快照校验：流开始时的会话/世界书仍与当前一致才允许提交结果
+function turnStillActive(sessionIdAtStart, bookIdAtStart) {
+  return activeSessionId === sessionIdAtStart && currentBookId === bookIdAtStart;
+}
+
 function switchSession(id) {
+  abortActiveChat('switch'); // 中断在途流式回复，避免结果写进错误会话
   const s = sessions.find(x => x.id === id);
   if (!s) return;
   activeSessionId = id;
@@ -128,6 +211,7 @@ function switchSession(id) {
 }
 
 function newSession() {
+  abortActiveChat('switch');
   const s = makeSession();
   sessions.push(s);
   activeSessionId = s.id;
@@ -140,6 +224,7 @@ function newSession() {
 }
 
 function deleteSession(id) {
+  abortActiveChat('switch');
   const idx = sessions.findIndex(x => x.id === id);
   if (idx < 0) return;
   sessions.splice(idx, 1);
@@ -277,18 +362,27 @@ function renderMemoryList() {
 }
 
 // ===== 大总结：AI 浓缩（每满 ROLLUP_EVERY 条小总结，后台异步） =====
-async function fetchCompletion(messages) {
-  const apiUrl = localStorage.getItem('wbe-api-url');
-  const apiKey = localStorage.getItem('wbe-api-key');
-  const model = localStorage.getItem('wbe-model') || 'gpt-4o';
+// 附属 AI 请求（标题生成/记忆总结/正文补全/模板生成）统一带 60s 超时，避免上游挂起卡死
+const AUX_REQUEST_TIMEOUT_MS = 60000;
+
+async function fetchCompletion(messages, opts = {}) {
+  const apiUrl = opts.apiUrl || localStorage.getItem('wbe-api-url');
+  const apiKey = opts.apiKey || localStorage.getItem('wbe-api-key');
+  const model = opts.model || localStorage.getItem('wbe-model') || 'gpt-4o';
   if (!apiUrl || !apiKey) throw new Error('未配置 API');
-  const resp = await streamFetch(apiUrl, apiKey, { model, messages });
-  let content = '';
-  for await (const chunk of streamSSE(resp)) {
-    const delta = chunk.choices?.[0]?.delta;
-    if (delta?.content) content += delta.content;
+  const controller = new AbortController();
+  const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, AUX_REQUEST_TIMEOUT_MS);
+  try {
+    const resp = await streamFetch(apiUrl, apiKey, { model, messages }, controller.signal);
+    let content = '';
+    for await (const chunk of streamSSE(resp)) {
+      const delta = chunk.choices?.[0]?.delta;
+      if (delta?.content) content += delta.content;
+    }
+    return content.trim();
+  } finally {
+    clearTimeout(timer);
   }
-  return content.trim();
 }
 
 // ===== AI 会话标题：首条消息后异步生成，失败回退截取法 =====
@@ -299,6 +393,7 @@ async function maybeGenerateTitle() {
   if (!cur || cur.aiTitled || titleGenerating) return;
   const first = chatMessages.find(m => m.role === 'user');
   if (!first) return;
+  const targetId = activeSessionId; // 快照：标题只写给发起时的会话，避免流式期间切换会话写错
   titleGenerating = true;
   try {
     const text = await fetchCompletion([
@@ -307,7 +402,7 @@ async function maybeGenerateTitle() {
     ]);
     const t = (text || '').replace(/["'「」『』【】]/g, '').trim();
     if (t && t.length <= 20) {
-      const s = sessions.find(x => x.id === activeSessionId);
+      const s = sessions.find(x => x.id === targetId);
       if (s && !s.aiTitled) {
         s.title = t;
         s.aiTitled = true;
@@ -364,7 +459,9 @@ async function maybeRollup() {
   }
 }
 
-// 注入 system：所有大总结全文 + 最近未压缩的小总结
+// 注入 system：所有大总结全文 + 最近未压缩的小总结（总长上限 8000 字符，防止上下文膨胀）
+const MEMORY_INJECTION_MAX = 8000;
+
 function buildMemoryInjection() {
   const parts = [];
   if (memory.rollups.length) {
@@ -372,15 +469,27 @@ function buildMemoryInjection() {
   }
   const recent = recentTurns();
   if (recent.length) {
-    parts.push('【近期操作（细节，避免重复查询已知信息）】\n' + recent.map((t, i) => {
+    const lines = recent.map((t, i) => {
       const seg = [];
       if (t.actionSummary) seg.push(t.actionSummary);
       else if (t.toolSummary) seg.push('完成了相关查询或修改');
       if (t.reply) seg.push(t.reply);
       return (i + 1) + '. ' + seg.join(' → ');
-    }).join('\n'));
+    });
+    // 按预算截断：优先保留最新的近期操作
+    let used = 0;
+    const kept = [];
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (used + lines[i].length > 6500) break;
+      kept.unshift(lines[i]);
+      used += lines[i].length;
+    }
+    if (kept.length < lines.length) kept.push('…(更早的操作已省略)');
+    parts.push('【近期操作（细节，避免重复查询已知信息）】\n' + kept.join('\n'));
   }
-  return parts.length ? '\n\n' + parts.join('\n\n') : '';
+  const joined = parts.join('\n\n');
+  if (!joined) return '';
+  return '\n\n' + (joined.length <= MEMORY_INJECTION_MAX ? joined : joined.slice(0, MEMORY_INJECTION_MAX) + '\n…(记忆注入已截断)');
 }
 
 // 确保当前 memory 与 currentBookId 对应（换书/刷新后用）。currentBookId 是 live binding。
@@ -426,11 +535,11 @@ function renderTemplateForm() {
   if (!box) return;
   const template = loadWritingTemplate(localStorage, currentBookId);
   box.innerHTML = '<div class="template-tabs">' + WRITING_TEMPLATE_FIELDS.map(([field, label], index) =>
-    '<button type="button" class="template-tab' + (index === 0 ? ' active' : '') + '" data-template-tab="' + escHtml(field) + '">' + escHtml(label.replace('模板', '')) + '</button>'
+    '<button type="button" class="template-tab' + (index === 0 ? ' active' : '') + '" data-template-tab="' + escAttr(field) + '">' + escHtml(label.replace('模板', '')) + '</button>'
   ).join('') + '</div>' +
   '<div class="template-panes">' + WRITING_TEMPLATE_FIELDS.map(([field, label], index) =>
-    '<label class="field template-pane' + (index === 0 ? ' active' : '') + '" data-template-pane="' + escHtml(field) + '"><span>' + escHtml(label) + '</span>' +
-    '<textarea class="template-textarea" data-template-field="' + escHtml(field) + '" rows="13" placeholder="例如：\n段落标题：写作要求\n禁忌：不要写空框架，不要泛泛而谈">' + escHtml(template[field] || '') + '</textarea></label>'
+    '<label class="field template-pane' + (index === 0 ? ' active' : '') + '" data-template-pane="' + escAttr(field) + '"><span>' + escHtml(label) + '</span>' +
+    '<textarea class="template-textarea" data-template-field="' + escAttr(field) + '" rows="13" placeholder="例如：\n段落标题：写作要求\n禁忌：不要写空框架，不要泛泛而谈">' + escHtml(template[field] || '') + '</textarea></label>'
   ).join('') + '</div>';
   box.querySelectorAll('[data-template-tab]').forEach(btn => {
     btn.addEventListener('click', () => setTemplateTab(btn.dataset.templateTab));
@@ -566,6 +675,7 @@ export function initChat() {
 
   if ($clear) {
     $clear.addEventListener('click', () => {
+      abortActiveChat('switch'); // 清空对话时中断在途流式回复
       chatMessages.length = 0;
       saveChatHistory();
       const c = $('chat-messages');
@@ -625,8 +735,9 @@ async function* streamSSE(response) {
     buffer = lines.pop();
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith('data: ')) {
-        const data = trimmed.slice(6);
+      if (trimmed.startsWith('data:')) {
+        // 兼容 "data: xxx" 与无空格的 "data:xxx" 两种格式
+        const data = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
         if (data === '[DONE]') return;
         try { yield JSON.parse(data); } catch {}
       }
@@ -635,13 +746,14 @@ async function* streamSSE(response) {
 }
 
 // ===== 流式 fetch 请求 =====
-async function streamFetch(apiUrl, apiKey, body) {
+async function streamFetch(apiUrl, apiKey, body, signal) {
   // 经本地后端代理转发流式 SSE，绕开第三方网关缺 CORS 头的问题
   const { authHeaders } = await import('./auth.js');
   const resp = await fetch('/api/proxy/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ url: apiUrl, key: apiKey, body: { ...body, stream: true } })
+    body: JSON.stringify({ url: apiUrl, key: apiKey, body: { ...body, stream: true } }),
+    signal
   });
   if (!resp.ok) throw new Error('API ' + resp.status + ': ' + await resp.text());
   return resp;
@@ -677,6 +789,8 @@ async function streamDisplay(response, msgEl) {
     }
   }
   collapseReasoningAfterStream(msgEl, reasoning);
+  // 冲刷最后一帧：rAF 节流下最后一帧可能仍在排队，这里以「非流式」姿态补一帧收尾
+  renderAssistantStream(msgEl, content, reasoning, false);
   // 压实：某些代理(Anthropic→OpenAI)用 content block index 当 tool_calls index，
   // 文本块占 0 导致数组出现空洞，filter 去掉空洞并丢弃没拿到函数名的残块
   const compact = toolCalls.filter(tc => tc && tc.function && tc.function.name);
@@ -689,24 +803,60 @@ function collapseReasoningAfterStream(msgEl, reasoning) {
   if (box) box.open = false;
 }
 
+// 流式渲染：requestAnimationFrame 节流（同一帧最多渲染一次），
+// 结构稳定后只增量更新正文/思考内容，避免每个 delta 全量重写 + 全量 markdown 解析。
+// 非流式（reasoningOpen=false，如流结束冲刷、最终回复）同步渲染，
+// 保证后续 append 的子元素（如「重新生成」按钮）不会被延迟的 rAF 整帧重建抹掉。
+let streamRenderRaf = null;
 function renderAssistantStream(msgEl, content, reasoning, reasoningOpen = false) {
-  const parts = [];
-  if (reasoning) {
-    parts.push('<details class="reasoning-box"' + (reasoningDetailsShouldBeOpen(reasoning, reasoningOpen) ? ' open' : '') + '>' +
-      '<summary>思考</summary>' +
-      '<div class="reasoning-text">' + formatChatText(reasoning) + '</div>' +
-      '</details>');
+  const doRender = () => {
+    const textEl = msgEl.querySelector('.stream-content');
+    const rb = msgEl.querySelector('.reasoning-box');
+    // 结构缺失（首帧 / 思考块新出现）才整体重建，否则增量更新
+    const needRebuild = !textEl || (reasoning && !rb);
+    if (needRebuild) {
+      const parts = [];
+      if (reasoning) {
+        parts.push('<details class="reasoning-box"' + (reasoningDetailsShouldBeOpen(reasoning, reasoningOpen) ? ' open' : '') + '>' +
+          '<summary>思考</summary>' +
+          '<div class="reasoning-text">' + formatChatText(reasoning) + '</div>' +
+          '</details>');
+      }
+      if (content) parts.push('<div class="stream-content">' + formatChatText(content) + '</div>');
+      else if (!reasoning) parts.push('<span class="typing-cursor">◊</span>');
+      msgEl.innerHTML = parts.join('');
+    } else {
+      if (content) textEl.innerHTML = formatChatText(content);
+      else if (!reasoning) textEl.innerHTML = '<span class="typing-cursor">◊</span>';
+      if (rb && reasoning) {
+        const rt = rb.querySelector('.reasoning-text');
+        if (rt) rt.innerHTML = formatChatText(reasoning);
+      }
+    }
+  };
+  if (reasoningOpen) {
+    // 流式高频调用：同一帧只渲染最后一次
+    if (streamRenderRaf) cancelAnimationFrame(streamRenderRaf);
+    streamRenderRaf = requestAnimationFrame(() => {
+      streamRenderRaf = null;
+      doRender();
+    });
+  } else {
+    if (streamRenderRaf) { cancelAnimationFrame(streamRenderRaf); streamRenderRaf = null; }
+    doRender();
   }
-  if (content) parts.push(formatChatText(content));
-  else if (!reasoning) parts.push('<span class="typing-cursor">◊</span>');
-  msgEl.innerHTML = parts.join('');
 }
 
 // ===== 格式化聊天文本（简单 markdown） =====
 function mdInline(s) {
   // 已是转义后的文本，处理行内 markdown
   s = s.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
-  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // 链接 URL 必须经 escUrl 转义 + 协议白名单（http/https/mailto），
+  // 否则 AI 输出的 [x](https://a.com/"onmouseover="alert(1)) 可属性注入窃取 localStorage
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
+    const safeUrl = escUrl(url);
+    return safeUrl ? '<a href="' + safeUrl + '" target="_blank" rel="noopener">' + label + '</a>' : m;
+  });
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
@@ -847,6 +997,30 @@ function setSendBusy(busy) {
 }
 
 // ===== sendChat =====
+const MAX_ROUNDS = 12;              // 工具调用轮数上限（原 25，平方级膨胀，降到 12 控制上下文）
+const STREAM_TIMEOUT_MS = 120000;   // 主对话流式请求超时（超时自动 abort 并复位 UI）
+const TOOL_DETAIL_MAX = 1500;       // 工具结果 detail 注入上下文的最大长度（超出截断+省略号）
+
+function genToolCallId() {
+  return 'call_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+// 工具结果 detail 截断：防止全量进 messages 导致上下文平方级膨胀
+function truncateToolDetail(detail) {
+  const d = String(detail == null ? '' : detail);
+  return d.length > TOOL_DETAIL_MAX ? d.slice(0, TOOL_DETAIL_MAX) + '\n…(结果过长已截断)' : d;
+}
+
+// 单个工具执行异常隔离：出错时把错误消息作为结果返回给模型，继续后续工具
+async function safeExecuteTool(name, args) {
+  try {
+    return await executeTool(name, args);
+  } catch (e) {
+    console.warn('[WBE] 工具执行异常:', name, e);
+    return { summary: name + ' 执行失败', detail: '工具 ' + name + ' 执行出错: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
 async function sendChat(prevText) {
   if (isSending) return; // 防止重复发送
   const input = $('chat-input');
@@ -868,7 +1042,7 @@ async function sendChat(prevText) {
   }
 
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
-  if (currentBookId !== logBookId) { loadMemory(currentBookId); loadChatHistory(currentBookId); renderChatHistory(); logBookId = currentBookId; }
+  ensureMemoryLoaded();
 
   if (prevText == null) {
     appendChatMessage('user', text);
@@ -885,18 +1059,33 @@ async function sendChat(prevText) {
     ...chatMessages
   ];
 
-  const MAX_ROUNDS = 25;
+  // 流开始时的会话/世界书快照：提交结果前校验，防止写进切换后的会话/书本
+  const sessionIdAtStart = activeSessionId;
+  const bookIdAtStart = currentBookId;
   // 本回合内 AI 调用了哪些工具及结果摘要，用于生成自然语言记忆。
   const turnTrace = [];
   setSendBusy(true);
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      const resp = await streamFetch(apiUrl, apiKey, { model, messages, tools: getTools(), tool_choice: 'auto' });
-      const msgEl = createAssistantBubble();
-      const result = await streamDisplay(resp, msgEl);
+      // 每次请求独立 AbortController + 120s 超时；超时/切换会话都会 abort 并复位 UI
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        if (activeChatAbort && activeChatAbort.controller === controller) activeChatAbort.reason = 'timeout';
+        try { controller.abort(); } catch (e) {}
+      }, STREAM_TIMEOUT_MS);
+      activeChatAbort = { controller, reason: null, sessionId: sessionIdAtStart };
+      let resp, msgEl, result;
+      try {
+        resp = await streamFetch(apiUrl, apiKey, { model, messages, tools: getTools(), tool_choice: 'auto' }, controller.signal);
+        msgEl = createAssistantBubble();
+        result = await streamDisplay(resp, msgEl);
+      } finally {
+        clearTimeout(timer);
+        // 注意：这里不清 activeChatAbort，让外层 catch 能读到超时/切换原因，由外层 finally 统一清理
+      }
 
       const textToolCalls = parseTextToolCalls(result.content || '');
-      console.log('[WBE] round', round, 'tool_calls:', result.tool_calls, 'textToolCalls:', textToolCalls.length);
+      console.log('[WBE] round', round, 'tool_calls:', result.tool_calls ? result.tool_calls.length : 0, 'textToolCalls:', textToolCalls.length);
 
       if (result.tool_calls && result.tool_calls.length > 0) {
         // ---- 原生 function calling ----
@@ -904,19 +1093,33 @@ async function sendChat(prevText) {
         if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
         else if (!hasVisibleAssistantStream(result.content, result.reasoning)) msgEl.parentElement.remove();
 
-        messages.push({ role: 'assistant', content: result.content || null, tool_calls: result.tool_calls });
-        for (const tc of result.tool_calls) {
+        // 先补齐缺失的 tool_call id（占位 id），保证 assistant 消息与后续 tool 消息的
+        // tool_call_id 一一对应，避免上游 400
+        const calls = result.tool_calls.map(tc => {
+          if (!tc.id) tc.id = genToolCallId();
+          return tc;
+        });
+        messages.push({ role: 'assistant', content: result.content || null, tool_calls: calls });
+        for (const tc of calls) {
+          const callId = tc.id || genToolCallId(); // id 缺失时生成占位，避免上游 400
           let args;
           try {
             args = JSON.parse(tc.function.arguments || '{}');
-          } catch {
-            try { args = JSON.parse((tc.function.arguments || '').replace(/\s*}\s*$/, '}')); }
-            catch { args = {}; }
+          } catch (e) {
+            // 解析失败不静默吞掉：把错误信息返回给模型让它修正参数格式
+            const errDetail = '工具参数 JSON 解析失败: ' + (e && e.message || 'invalid JSON') +
+              '（参数原文: ' + String(tc.function.arguments || '').slice(0, 200) + '）。请修正参数格式后重新调用该工具。';
+            turnTrace.push(tc.function.name + ': 参数解析失败');
+            appendChatMessage('tool', tc.function.name + ': 参数解析失败');
+            messages.push({ role: 'tool', tool_call_id: callId, content: truncateToolDetail(errDetail) });
+            continue;
           }
-          const r = await executeTool(tc.function.name, args);
+          const r = await safeExecuteTool(tc.function.name, args);
           turnTrace.push(tc.function.name + ': ' + r.summary);
           appendChatMessage('tool', tc.function.name + ': ' + r.summary);
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: r.detail });
+          // 原生 function calling 协议要求一个 tool_call_id 对应一条 tool 消息，不能合并；
+          // 用截断控制每条 detail 大小，控制整体膨胀
+          messages.push({ role: 'tool', tool_call_id: callId, content: truncateToolDetail(r.detail) });
         }
         continue; // 回到循环，AI 可继续调用工具或给出最终回复
 
@@ -926,12 +1129,13 @@ async function sendChat(prevText) {
         if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
         else if (!hasVisibleAssistantStream(result.content, result.reasoning)) msgEl.parentElement.remove();
 
-        let toolResultsText = [];
+        // 同一轮的工具结果合并成一条消息，detail 逐条截断，避免消息条数与体积膨胀
+        const toolResultsText = [];
         for (const tc of textToolCalls) {
-          const r = await executeTool(tc.name, tc.args);
+          const r = await safeExecuteTool(tc.name, tc.args);
           turnTrace.push(tc.name + ': ' + r.summary);
           appendChatMessage('tool', tc.name + ': ' + r.summary);
-          toolResultsText.push(tc.name + ' 结果: ' + r.summary + '\n' + r.detail);
+          toolResultsText.push(tc.name + ' 结果: ' + r.summary + '\n' + truncateToolDetail(r.detail));
         }
 
         messages.push({ role: 'assistant', content: aiText || result.content || '' });
@@ -942,6 +1146,11 @@ async function sendChat(prevText) {
         // ---- 最终回复 ----
         const clean = stripToolCalls(result.content) || '(无回复)';
         if (clean !== result.content) renderAssistantStream(msgEl, clean, result.reasoning, false);
+        // 流式期间可能已切换会话/清空对话：快照不匹配则丢弃结果，不写进错误会话
+        if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
+          import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
+          return;
+        }
         chatMessages.push({ role: 'assistant', content: clean });
         trimHistory();
         attachResendBtn(msgEl); // 重新生成按钮
@@ -952,15 +1161,33 @@ async function sendChat(prevText) {
       }
     }
     // 达到轮数上限也要把已发生的过程存进历史，否则这一整轮全丢
+    if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
+      import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
+      return;
+    }
     chatMessages.push({ role: 'assistant', content: '(本回合操作较多未给出总结)' });
     trimHistory();
     pushTurnMemory({ user: text, trace: turnTrace, reply: '(本回合操作较多未给出总结)' });
     maybeRollup();
     appendChatMessage('error', '已达最大工具调用轮数(' + MAX_ROUNDS + ')，已停止。');
   } catch (e) {
-    appendChatMessage('error', '请求失败: ' + e.message);
+    const aborted = !!(e && (e.name === 'AbortError' || e.name === 'TimeoutError'));
+    if (aborted) {
+      const reason = activeChatAbort ? activeChatAbort.reason : null;
+      if (reason === 'switch') {
+        // 切换会话/清空对话主动中断：不污染新会话，只轻提示
+        import('./utils.js').then(m => m.showToast('已停止当前回复', 'info'));
+      } else {
+        import('./utils.js').then(m => m.showToast('请求超时，已自动停止', 'error'));
+        if (turnStillActive(sessionIdAtStart, bookIdAtStart)) appendChatMessage('error', '请求超时，已自动停止。');
+      }
+    } else {
+      import('./utils.js').then(m => m.showToast('请求失败: ' + e.message, 'error'));
+      if (turnStillActive(sessionIdAtStart, bookIdAtStart)) appendChatMessage('error', '请求失败: ' + e.message);
+    }
   } finally {
-    setSendBusy(false);
+    if (activeChatAbort) activeChatAbort = null; // 清理在途引用，避免悬挂
+    setSendBusy(false); // abort/超时后恢复 UI：按钮可用、isSending 复位
   }
 }
 
@@ -1014,7 +1241,7 @@ function appendToolLine(container, text) {
 }
 
 // ===== AI 工具定义 =====
-function getTools() {
+function buildToolsList() {
   return [
     {
       type: 'function',
@@ -1462,6 +1689,16 @@ function getTools() {
   ];
 }
 
+// 工具定义是纯静态的：模块级缓存一次，避免每轮请求重建 29 个对象
+const TOOLS_CACHE = buildToolsList();
+function getTools() { return TOOLS_CACHE; }
+
+// 开发期一致性校验：工具定义与名单单一来源保持一致
+{
+  const missing = TOOLS_CACHE.filter(t => !TOOL_NAMES.includes(t.function.name)).map(t => t.function.name);
+  if (missing.length) console.warn('[WBE] getTools 存在名单外的工具名:', missing.join(', '));
+}
+
 function smartEntryParameters() {
   return {
     type: 'object',
@@ -1545,25 +1782,30 @@ function parseTextToolCalls(text) {
     while ((pm = paramRe.exec(body)) !== null) {
       const key = pm[1].trim();
       let val = pm[2].trim();
-      if (/^-?\d+$/.test(val)) val = parseInt(val);
+      if (/^-?\d+$/.test(val)) val = parseInt(val, 10);
       else if (val === 'true') val = true;
       else if (val === 'false') val = false;
+      else if (/^[\[{]/.test(val)) {
+        // 对象/数组参数保持结构化，避免被字符串化写脏数据
+        try {
+          const parsed = JSON.parse(val);
+          if (parsed !== null && typeof parsed === 'object') val = parsed;
+        } catch (e) {}
+      }
       args[key] = val;
     }
     results.push({ name, args });
   }
   if (results.length > 0) return results;
 
-  // 3. {"name":"xxx","arguments":{...}} 独立 JSON
-  const jsonRe = /\{\s*"name"\s*:\s*"(search_entries|get_entry|edit_entry|add_entry|add_entries|get_writing_template|update_writing_template|plan_smart_entry|create_smart_entry|delete_entry|delete_entries|batch_edit|replace_text|manage_keys|move_entry|list_entries|toggle_entry|reorder_entry|duplicate_entry|undo_last|get_book_info|list_books|switch_book|create_book|rename_book|delete_book)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
-  while ((m = jsonRe.exec(text)) !== null) {
+  // 3. {"name":"xxx","arguments":{...}} 独立 JSON（名单派生自 TOOL_NAME_PATTERN）
+  while ((m = TOOL_CALL_JSON_RE.exec(text)) !== null) {
     try { results.push({ name: m[1], args: JSON.parse(m[2]) }); } catch (e) {}
   }
   if (results.length > 0) return results;
 
-  // 4. search_entries("xxx") 函数调用格式
-  const fnRe = /\b(search_entries|get_entry|edit_entry|add_entry|add_entries|get_writing_template|update_writing_template|plan_smart_entry|create_smart_entry|delete_entry|delete_entries|batch_edit|replace_text|manage_keys|move_entry|list_entries|toggle_entry|reorder_entry|duplicate_entry|undo_last|get_book_info|list_books|switch_book|create_book|rename_book|delete_book)\s*\(([^)]*)\)/g;
-  while ((m = fnRe.exec(text)) !== null) {
+  // 4. search_entries("xxx") 函数调用格式（名单派生自 TOOL_NAME_PATTERN）
+  while ((m = TOOL_FN_RE.exec(text)) !== null) {
     try {
       const args = JSON.parse('[' + m[2] + ']');
       results.push({ name: m[1], args: typeof args[0] === 'object' ? args[0] : { query: String(args[0]) } });
@@ -1580,13 +1822,13 @@ function stripToolCalls(text) {
   text = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
   text = text.replace(/<tool_use>[\s\S]*?<\/tool_use>/g, '');
   text = text.replace(/<function=\w+>[\s\S]*?<\/function>/g, '');
-  text = text.replace(/\{\s*"name"\s*:\s*"(search_entries|get_entry|edit_entry|add_entry|add_entries|get_writing_template|update_writing_template|plan_smart_entry|create_smart_entry|delete_entry|delete_entries|batch_edit|replace_text|manage_keys|move_entry|list_entries|toggle_entry|reorder_entry|duplicate_entry|undo_last|get_book_info|list_books|switch_book|create_book|rename_book|delete_book)"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, '');
+  text = text.replace(TOOL_CALL_JSON_STRIP_RE, '');
   text = text.replace(/\n{3,}/g, '\n\n').trim();
   return text;
 }
 
 async function executeTool(name, args) {
-  console.log('[WBE] executeTool:', name, JSON.stringify(args).substring(0, 100));
+  console.log('[WBE] executeTool:', name, 'args keys:', Object.keys(args || {}).join(',')); // 不打印参数内容，避免敏感信息泄漏
   switch (name) {
     case 'search_entries': return toolSearch(args);
     case 'get_entry': return toolGet(args);
@@ -1673,20 +1915,62 @@ function toolGet({ uid }) {
   return { summary: '#' + uid + ' ' + (e.comment||''), detail: JSON.stringify(e, null, 2) };
 }
 
+// 条目字段白名单（与 state.js createEntry 的字段一致）：AI 只能写这些字段，防止任意字段污染数据结构
+const ENTRY_FIELD_TYPES = {
+  key: 'array', keysecondary: 'array', triggers: 'array',
+  comment: 'string', content: 'string', group: 'string', role: 'string',
+  automationId: 'string', outletName: 'string',
+  constant: 'boolean', selective: 'boolean', addMemo: 'boolean', groupOverride: 'boolean',
+  useProbability: 'boolean', vectorized: 'boolean', excludeRecursion: 'boolean',
+  preventRecursion: 'boolean', delayUntilRecursion: 'boolean', ignoreBudget: 'boolean',
+  matchPersonaDescription: 'boolean', matchCharacterDescription: 'boolean',
+  matchCharacterPersonality: 'boolean', matchCharacterDepthPrompt: 'boolean',
+  matchScenario: 'boolean', matchCreatorNotes: 'boolean', disable: 'boolean',
+  selectiveLogic: 'number', order: 'number', position: 'number', groupWeight: 'number',
+  sticky: 'number', cooldown: 'number', delay: 'number', probability: 'number',
+  depth: 'number', displayIndex: 'number', scanDepth: 'number', caseSensitive: 'number',
+  matchWholeWords: 'number', useGroupScoring: 'number',
+  characterFilter: 'object'
+};
+
+// 白名单字段类型归一：白名单外字段返回 undefined（丢弃），合法字段按类型转换
+function normalizeEntryFieldValue(key, value) {
+  const type = ENTRY_FIELD_TYPES[key];
+  if (!type) return undefined;
+  if (value === undefined) return undefined;
+  if (value === null) {
+    // 仅允许本就是可空字段写入 null
+    return (key === 'role' || key === 'scanDepth' || key === 'caseSensitive' || key === 'matchWholeWords' || key === 'useGroupScoring') ? null : undefined;
+  }
+  switch (type) {
+    case 'boolean': return Boolean(value);
+    case 'number': { const n = Number(value); return Number.isFinite(n) ? n : 0; }
+    case 'string': return String(value);
+    case 'array': return Array.isArray(value) ? value.map(String) : (typeof value === 'string' ? value.split(/[,，]/).map(s => s.trim()).filter(Boolean) : []);
+    case 'object': return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+    default: return undefined;
+  }
+}
+
 function toolEdit({ uid, fields }) {
   const e = getAllEntries().find(e => e.uid === uid);
   if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
   snapshotForUndo('编辑 #' + uid);
   const changed = [];
-  for (const [k, v] of Object.entries(fields)) {
+  const ignored = [];
+  for (const [k, v] of Object.entries(fields || {})) {
     if (k === 'uid') continue;
-    e[k] = v;
+    const nv = normalizeEntryFieldValue(k, v);
+    if (nv === undefined) { ignored.push(k); continue; }
+    e[k] = nv;
     changed.push(k);
   }
   if (currentUid === uid) renderEditor(e);
   renderSidebar();
   scheduleSave();
-  return { summary: '已修改 #' + uid + ' 的 ' + changed.join(','), detail: '修改字段: ' + changed.join(', ') };
+  const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
+  if (!changed.length) return { summary: '没有可修改的合法字段', detail: '传入字段均不在白名单内或为空：' + ignored.join(', ') };
+  return { summary: '已修改 #' + uid + ' 的 ' + changed.join(','), detail: '修改字段: ' + changed.join(', ') + ignoreNote };
 }
 
 function applyEntryMeta(entry, semanticType, functionType, extra) {
@@ -1950,14 +2234,14 @@ function toolBatchEdit({ filter, fields }) {
   let list = applyEntryFilter(getAllEntries(), filter);
   if (list.length === 0) return { summary: '无匹配条目', detail: '筛选条件未匹配到任何条目，未做修改' };
   snapshotForUndo('批量修改 ' + list.length + ' 条');
-  const changed = Object.keys(fields);
-  let count = 0;
-  for (const e of list) {
-    for (const [k, v] of Object.entries(fields)) {
-      if (k === 'uid') continue;
-      e[k] = v;
-    }
-    count++;
+  const changed = [];
+  const ignored = [];
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (k === 'uid') continue;
+    const nv = normalizeEntryFieldValue(k, v);
+    if (nv === undefined) { ignored.push(k); continue; }
+    changed.push(k);
+    for (const e of list) e[k] = nv;
   }
   renderSidebar();
   if (currentUid) {
@@ -1965,7 +2249,8 @@ function toolBatchEdit({ filter, fields }) {
     if (current) renderEditor(current);
   }
   scheduleSave();
-  return { summary: '已批量修改 ' + count + ' 条', detail: '修改字段: ' + changed.join(', ') + '，影响 ' + count + ' 条' };
+  const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
+  return { summary: '已批量修改 ' + list.length + ' 条', detail: '修改字段: ' + changed.join(', ') + '，影响 ' + list.length + ' 条' + ignoreNote };
 }
 
 function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -2360,6 +2645,7 @@ async function toolSwitchBook({ id, name }) {
   }
   if (!target) return { summary: '未找到目标世界书', detail: '没有匹配 id=' + id + ' / name=' + name + ' 的世界书。可先用 list_books 查看。' };
   if (target.id === currentBookId) return { summary: '已在「' + target.name + '」', detail: '当前已是该世界书，无需切换' };
+  abortActiveChat('switch'); // 切书即中断在途流式回复
   await loadBook(target.id, renderSidebar, selectEntry, renderEditorEmpty);
   return { summary: '已切换到「' + target.name + '」', detail: '已打开世界书 #' + target.id + '（' + target.name + '），现有 ' + entries.length + ' 条' };
 }
@@ -2367,6 +2653,7 @@ async function toolSwitchBook({ id, name }) {
 async function toolCreateBook({ name }) {
   const bookName = (name && String(name).trim()) || '新世界书';
   const res = await createBook(bookName);
+  abortActiveChat('switch');
   await loadBook(res.id, renderSidebar, selectEntry, renderEditorEmpty);
   return { summary: '已创建并打开「' + bookName + '」', detail: '新世界书 #' + res.id + '（' + bookName + '）已创建并切换过去' };
 }
@@ -2407,8 +2694,24 @@ async function toolDeleteBook({ id, name, confirm }) {
   try { await deleteBook(target.id); }
   catch (e) { return { summary: '删除失败', detail: e.message }; }
 
+  // 一并清理该书在 localStorage 的记忆/会话/活动会话键（含旧版单会话历史）
+  try {
+    localStorage.removeItem(memKey(target.id));
+    localStorage.removeItem(sessionsKey(target.id));
+    localStorage.removeItem(activeKey(target.id));
+    localStorage.removeItem('wbe-chat:' + target.id);
+  } catch (e) {
+    console.warn('[WBE] 清理已删世界书的本地数据失败:', target.id, e);
+  }
+
   let tail = '';
   if (wasCurrent) {
+    abortActiveChat('switch');
+    memory = emptyMemory();
+    logBookId = null;
+    sessions = [];
+    activeSessionId = null;
+    updateMemoryBadge();
     const rest = await loadBookList();
     if (rest.length) {
       await loadBook(rest[0].id, renderSidebar, selectEntry, renderEditorEmpty);
@@ -2418,8 +2721,11 @@ async function toolDeleteBook({ id, name, confirm }) {
       st.setCurrentBookId(null); st.setCurrentUid(null);
       setEntries([]); renderSidebar(); renderEditorEmpty();
       const el = $('file-name'); if (el) el.textContent = '未命名';
+      chatMessages.length = 0;
+      renderChatHistory();
       tail = '，已无其它世界书';
     }
+    ensureMemoryLoaded(); // 加载新当前书的记忆与会话（logBookId 已置空会触发重载）
   }
   return { summary: '已删除「' + target.name + '」', detail: '世界书 #' + target.id + '（' + target.name + '）已永久删除' + tail };
 }

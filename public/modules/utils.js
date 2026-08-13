@@ -7,7 +7,15 @@ export function escHtml(s) {
 }
 
 export function escAttr(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
+}
+
+// 专门用于 HTML 属性里的 URL：转义引号等特殊字符防止属性注入，
+// 且只放行 http/https/mailto 协议，其余协议一律返回 ''（调用方应渲染为纯文本而非链接）
+export function escUrl(s) {
+  const str = String(s == null ? '' : s).trim();
+  if (!/^(https?:|mailto:)/i.test(str)) return '';
+  return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
 }
 
 export function uidKey(uid) {
@@ -41,10 +49,146 @@ export function showToast(msg, type) {
     if (!el) { console.log('[Toast ' + type + '] ' + msg); return; }
     el.textContent = msg;
     el.className = 'toast toast-' + (type || 'info');
+    // 错误型提示用 alert 角色（assertive），其余用 status（polite），让读屏可感知
+    el.setAttribute('role', type === 'error' ? 'alert' : 'status');
     requestAnimationFrame(() => el.classList.add('show'));
     if (_toastTimer) clearTimeout(_toastTimer);
     _toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
   } catch (e) {
     console.log('[Toast error]', e, msg);
   }
+}
+
+// ===== Modal 弹窗：焦点管理（Esc 关闭 / Tab 循环 / 焦点归还 / 背景滚动锁） =====
+// 弹窗只要带 .modal.open 即生效（不依赖调用方是否走 openModal）；
+// openModal 额外记录触发元素，关闭时把焦点归还给触发者。
+const _modalStack = [];   // [{ el, prev }] 只记录经由 openModal 打开的弹窗
+let _modalReady = false;
+
+function _focusables(el) {
+  return Array.from(el.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )).filter(n => n.offsetParent !== null || n === document.activeElement);
+}
+
+function _topOpenModal() {
+  const open = Array.from(document.querySelectorAll('.modal.open'));
+  return open[open.length - 1] || null;
+}
+
+function _syncScrollLock() {
+  const locked = document.querySelectorAll('.modal.open').length > 0;
+  document.body.classList.toggle('modal-lock', locked);
+}
+
+function _onModalKeydown(e) {
+  // Esc：关闭最上层弹窗
+  if (e.key === 'Escape') {
+    const top = _topOpenModal();
+    if (top) {
+      e.preventDefault();
+      closeModal(top);
+    }
+    return;
+  }
+  // Tab：焦点循环（首尾环绕）
+  if (e.key === 'Tab') {
+    const top = _topOpenModal();
+    if (!top) return;
+    const focusables = _focusables(top);
+    if (!focusables.length) { e.preventDefault(); return; }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const within = top.contains(document.activeElement);
+    if (!within) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+}
+
+function _ensureModalHandlers() {
+  if (_modalReady) return;
+  _modalReady = true;
+  document.addEventListener('keydown', _onModalKeydown);
+}
+// 模块加载即挂载：保证任何方式打开的 .modal.open（含 chat.js 直接 classList 操作）都有 Esc/Tab 处理
+_ensureModalHandlers();
+
+export function openModal(el, opts) {
+  if (!el) return null;
+  if (el.classList.contains('open')) return el;
+  const prev = document.activeElement;
+  el.classList.add('open');
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  _modalStack.push({ el, prev });
+  _syncScrollLock();
+  // 聚焦弹窗内第一个可聚焦元素（或调用方指定的元素）
+  const focusTarget = (opts && opts.focus) || _focusables(el)[0];
+  if (focusTarget && typeof focusTarget.focus === 'function') {
+    try { focusTarget.focus(); } catch (e) {}
+  }
+  el.dispatchEvent(new CustomEvent('modal:opened'));
+  return el;
+}
+
+export function closeModal(el) {
+  if (!el || !el.classList.contains('open')) return;
+  // 先把焦点从弹窗内移出（部分浏览器不会在 display:none 时自动归还焦点）
+  const active = document.activeElement;
+  if (active && el.contains(active) && typeof active.blur === 'function') {
+    try { active.blur(); } catch (e) {}
+  }
+  el.classList.remove('open');
+  const idx = _modalStack.findIndex(s => s.el === el);
+  let prev = null;
+  if (idx >= 0) {
+    prev = _modalStack[idx].prev;
+    _modalStack.splice(idx, 1);
+  }
+  _syncScrollLock();
+  el.dispatchEvent(new CustomEvent('modal:closed'));
+  // 焦点归还：关闭的是最上层弹窗，且当前焦点已丢失（弹窗被隐藏后浏览器把焦点移到 body）
+  if (prev && prev.isConnected &&
+      (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected)) {
+    try { prev.focus(); } catch (e) {}
+  }
+  return el;
+}
+
+// ===== 应用内确认弹窗（替代 confirm() / 二次点击删除） =====
+// showConfirm({ title, message, okText, danger }) => Promise<boolean>
+export function showConfirm(opts) {
+  const modal = document.getElementById('confirmModal');
+  if (!modal) return Promise.resolve(false);
+  const titleEl = document.getElementById('confirmTitle');
+  const textEl = document.getElementById('confirmText');
+  const okBtn = document.getElementById('confirmOkBtn');
+  const cancelBtn = document.getElementById('confirmCancelBtn');
+  if (titleEl) titleEl.textContent = (opts && opts.title) || '确认操作';
+  if (textEl) textEl.textContent = (opts && opts.message) || '';
+  if (okBtn) {
+    okBtn.textContent = (opts && opts.okText) || '确定';
+    okBtn.className = 'action' + ((opts && opts.danger) ? ' danger' : ' primary');
+  }
+  return new Promise(resolve => {
+    let settled = false;
+    const done = val => {
+      if (settled) return;
+      settled = true;
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('modal:closed', onClosed);
+      closeModal(modal);
+      resolve(val);
+    };
+    const onOk = () => done(true);
+    const onCancel = () => done(false);
+    // 点背景 / 按 Esc / 走 data-close-modal 关闭时视为取消
+    const onClosed = () => done(false);
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('modal:closed', onClosed);
+    openModal(modal, { focus: cancelBtn });
+  });
 }

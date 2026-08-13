@@ -61,23 +61,36 @@ export function renderSidebar() {
   const elVisible = $('visibleCount');
   if (elVisible) elVisible.textContent = pad2(filtered.length) + ' pieces';
 
-  renderFeature(filtered[0]);
+  renderFeature(filtered[0], {
+    noEntries: entries.length === 0,
+    query: searchQuery,
+    filter: currentFilter
+  });
   renderGrid(filtered.slice(1, 5));
   renderIndex(filtered.slice(5));
 }
 
-function renderFeature(e) {
+// 空状态文案：区分「零条目」与「搜索/筛选无匹配」
+function emptyFeatureText(info) {
+  if (info.noEntries) return '还没有条目。点右下角「＋」开始建立这一册世界书。';
+  if (info.query) return '没有匹配「' + escHtml(info.query) + '」的条目。';
+  return '当前筛选下没有条目。';
+}
+
+function renderFeature(e, emptyInfo) {
   const el = $('featureEntry');
   if (!el) return;
   if (!e) {
     el.className = 'feature empty';
-    el.innerHTML = '还没有条目。点右下角「＋」开始建立这一册世界书。';
+    el.disabled = true;
+    el.innerHTML = emptyFeatureText(emptyInfo || {});
     el.onclick = null;
     return;
   }
   const st = statusOf(e);
   const kw = (e.key || []).slice(0, 4).join(' · ') || '常驻注入';
   el.className = 'feature';
+  el.disabled = false;
   el.innerHTML =
     '<div class="feature-meta">' +
       '<span class="number">' + pad2(e.uid) + '</span>' +
@@ -99,13 +112,13 @@ function renderGrid(list) {
   if (!list.length) { el.innerHTML = ''; return; }
   el.innerHTML = list.map(e => {
     const st = statusOf(e);
-    return '<article class="entry-card" data-uid="' + e.uid + '">' +
+    return '<button type="button" class="entry-card" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
       '<div class="entry-no">' + pad2(e.uid) + '</div>' +
       '<div class="type">' + escHtml(typeOf(e)) + '</div>' +
       '<h3>' + escHtml(e.comment || '(无标题)') + '</h3>' +
       '<p>' + escHtml(preview(e).slice(0, 90)) + '</p>' +
       '<div class="entry-status ' + st.cls + '"><span class="dot"></span>' + st.label + '</div>' +
-    '</article>';
+    '</button>';
   }).join('');
   el.querySelectorAll('.entry-card').forEach(card =>
     card.addEventListener('click', () => open(parseInt(card.dataset.uid)))
@@ -127,14 +140,14 @@ function renderIndex(list) {
   el.innerHTML = shown.map(e => {
     const st = statusOf(e);
     const kw = (e.key || []).slice(0, 3).join(' · ') || (e.constant ? '常驻' : '—');
-    return '<div class="index-row" data-uid="' + e.uid + '">' +
+    return '<button type="button" class="index-row" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
       '<div class="index-no">' + pad2(e.uid) + '</div>' +
       '<div class="index-copy">' +
         '<strong>' + escHtml(e.comment || '(无标题)') + '</strong>' +
         '<small>' + escHtml(kw) + '</small>' +
       '</div>' +
       '<div class="index-state ' + st.cls + '"><span class="dot"></span>' + st.label + '</div>' +
-    '</div>';
+    '</button>';
   }).join('');
   el.querySelectorAll('.index-row').forEach(row =>
     row.addEventListener('click', () => open(parseInt(row.dataset.uid)))
@@ -179,14 +192,18 @@ function initFilters() {
   });
 }
 
-// ===== 搜索 =====
+// ===== 搜索（200ms 防抖） =====
+let _searchTimer = null;
 function initSearch() {
   const input = $('searchInput');
   if (!input) return;
   input.addEventListener('input', () => {
-    setSearchQuery(input.value.trim());
-    indexLimit = PAGE_SIZE;
-    renderSidebar();
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => {
+      setSearchQuery(input.value.trim());
+      indexLimit = PAGE_SIZE;
+      renderSidebar();
+    }, 200);
   });
 }
 

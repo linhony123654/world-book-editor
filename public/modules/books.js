@@ -1,7 +1,7 @@
 // ===== Archives 屏（世界书刊号：当前刊 + 全部刊 + 新建/切换/删除） =====
-import { $, escHtml, showToast } from './utils.js';
+import { $, escHtml, showToast, showConfirm, openModal, closeModal } from './utils.js';
 import { currentBookId } from './state.js';
-import { loadBookList, loadBook, createBook, deleteBook } from './api.js';
+import { apiRequest, loadBookList, loadBook, createBook, deleteBook } from './api.js';
 
 let deps = null;     // { renderSidebar, selectEntry, renderEditorEmpty }
 let setScreenFn = null;
@@ -10,6 +10,8 @@ let setScreenFn = null;
 const BOOK_PAGE_SIZE = 10;
 let bookSearch = '';
 let archivePage = 1;
+let _bookSearchTimer = null;   // 250ms 防抖
+let _renderSeq = 0;            // 请求序号守卫：只渲染最新一次请求的结果
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
@@ -39,18 +41,22 @@ export function initBooks(d, setScreen) {
       wrap.hidden = !show;
       searchBtn.classList.toggle('on', show);
       if (show) { if (searchInput) searchInput.focus(); }
-      else { bookSearch = ''; if (searchInput) searchInput.value = ''; archivePage = 1; renderArchives(); }
+      else { clearTimeout(_bookSearchTimer); bookSearch = ''; if (searchInput) searchInput.value = ''; archivePage = 1; renderArchives(); }
     });
   }
   if (searchInput) {
     searchInput.addEventListener('input', () => {
-      bookSearch = searchInput.value.trim().toLowerCase();
-      archivePage = 1;
-      renderArchives();
+      clearTimeout(_bookSearchTimer);
+      _bookSearchTimer = setTimeout(() => {
+        bookSearch = searchInput.value.trim().toLowerCase();
+        archivePage = 1;
+        renderArchives();
+      }, 250);
     });
   }
   const clearBtn = $('archiveSearchClear');
   if (clearBtn) clearBtn.addEventListener('click', () => {
+    clearTimeout(_bookSearchTimer);
     bookSearch = '';
     if (searchInput) { searchInput.value = ''; searchInput.focus(); }
     archivePage = 1;
@@ -66,12 +72,24 @@ export function initBooks(d, setScreen) {
 
 // ===== 渲染 Archives =====
 export async function renderArchives() {
+  const seq = ++_renderSeq;
   const grid = $('issueGrid');
   const cur = $('issueCurrent');
   const count = $('archiveCount');
   if (grid) grid.innerHTML = '<div class="empty-list" style="grid-column:1/-1">加载中…</div>';
 
-  const books = await loadBookList();
+  // 直接用 apiRequest（loadBookList 会吞掉错误静默返回 []，这里需要区分失败与空列表）
+  let books;
+  try {
+    books = await apiRequest('GET', '/api/books');
+  } catch (e) {
+    if (seq !== _renderSeq) return; // 已有更新的请求
+    if (grid) grid.innerHTML = '<div class="empty-list" style="grid-column:1/-1">加载失败，请检查网络后重试。</div>';
+    showToast('世界书列表加载失败', 'error');
+    return;
+  }
+  if (seq !== _renderSeq) return; // 丢弃过期响应，避免乱序覆盖新结果
+
   if (count) count.textContent = books.length + (books.length === 1 ? ' Issue' : ' Issues');
 
   // 当前刊大封面
@@ -116,8 +134,8 @@ export async function renderArchives() {
 
   grid.innerHTML = pageBooks.map(b => {
     const active = b.id === currentBookId ? ' active' : '';
-    return '<div class="issue' + active + '" data-id="' + b.id + '">' +
-      '<button class="issue-del" data-del="' + b.id + '" title="删除">✕</button>' +
+    return '<div class="issue' + active + '" data-id="' + b.id + '" role="button" tabindex="0">' +
+      '<button class="issue-del" data-del="' + b.id + '" title="删除" aria-label="删除世界书「' + escHtml(b.name) + '」">✕</button>' +
       '<div class="mini">No.' + pad2(b.id) + (b.id === currentBookId ? ' · 当前' : '') + '</div>' +
       '<h4>' + escHtml(b.name) + '</h4>' +
       '<small>' + b.entry_count + ' entries</small>' +
@@ -136,8 +154,15 @@ export async function renderArchives() {
     }
   }
 
-  // 点击切换
+  // 点击切换（键盘 Enter/Space 等价触发；删除按钮上的按键不冒泡到卡片）
   grid.querySelectorAll('.issue').forEach(card => {
+    card.addEventListener('keydown', (e) => {
+      if (e.target.closest('.issue-del')) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        card.click();
+      }
+    });
     card.addEventListener('click', async (e) => {
       if (e.target.closest('.issue-del')) return;
       const id = parseInt(card.dataset.id);
@@ -147,28 +172,22 @@ export async function renderArchives() {
     });
   });
 
-  // 删除：二次点击确认
+  // 删除：应用内确认弹窗（替代原来的 22px 二次点击，降低误删风险）
   grid.querySelectorAll('.issue-del').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (btn.dataset.armed === '1') {
-        await onDeleteBook(parseInt(btn.dataset.del), books);
-        return;
-      }
-      grid.querySelectorAll('.issue-del').forEach(disarm);
-      btn.dataset.armed = '1';
-      btn.classList.add('armed');
-      btn.textContent = '确认?';
-      btn._t = setTimeout(() => disarm(btn), 3000);
+      const id = parseInt(btn.dataset.del);
+      const book = books.find(b => b.id === id);
+      const name = book ? book.name : ('#' + id);
+      const ok = await showConfirm({
+        title: '删除世界书',
+        message: '确定删除「' + name + '」？该操作不可撤销。',
+        okText: '删除',
+        danger: true
+      });
+      if (ok) await onDeleteBook(id, books);
     });
   });
-}
-
-function disarm(b) {
-  if (b._t) clearTimeout(b._t);
-  b.dataset.armed = '0';
-  b.classList.remove('armed');
-  b.textContent = '✕';
 }
 
 // ===== 新建世界书弹窗 =====
@@ -176,12 +195,11 @@ function openBookModal() {
   const modal = $('bookModal');
   const input = $('newBookInput');
   if (input) input.value = '新世界书';
-  if (modal) modal.classList.add('open');
+  openModal(modal, { focus: input });
   if (input) { input.focus(); input.select(); }
 }
 function closeBookModal() {
-  const modal = $('bookModal');
-  if (modal) modal.classList.remove('open');
+  closeModal($('bookModal'));
 }
 
 async function onCreateBook() {
