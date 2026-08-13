@@ -528,6 +528,33 @@ svg { display: block; }
 .setting strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 15px; font-weight: 400; }
 .setting small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
 
+/* ===== 版本 diff（GitHub 风格） ===== */
+.diff-summary { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.diff-summary small { color: var(--muted); font-size: 10px; }
+.diff-stat { font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+.diff-stat.add { color: var(--forest); }
+.diff-stat.del { color: var(--danger); }
+.diff-stat.mod { color: var(--gold); }
+.diff-content { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.diff-entry {
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.diff-entry.add { border-color: var(--forest); background: var(--forest-soft); }
+.diff-entry.del { border-color: var(--danger); background: color-mix(in srgb, var(--wine-soft) 60%, transparent); }
+.diff-entry b { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 13px; font-weight: 400; }
+.diff-entry small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+.diff-lines { margin-top: 8px; border-radius: 6px; overflow: hidden; }
+.diff-line { padding: 3px 8px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.diff-line.add { background: color-mix(in srgb, var(--forest-soft) 70%, transparent); color: var(--forest); }
+.diff-line.del { background: color-mix(in srgb, var(--wine-soft) 70%, transparent); color: var(--danger); }
+.diff-more { padding: 4px 8px; color: var(--muted); font-size: 9px; }
+.diff-field { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 10px; flex-wrap: wrap; }
+.diff-fname { color: var(--muted); font-weight: 700; }
+.diff-old { color: var(--danger); text-decoration: line-through; opacity: .85; }
+.diff-new { color: var(--forest); }
+.diff-arrow { color: var(--faint); }
+.diff-empty { padding: 20px 0; color: var(--muted); text-align: center; font-size: 12px; }
+
 /* ===== 历史版本 ===== */
 .version-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
 .version-empty { padding: 18px 0; color: var(--muted); font-size: 12px; text-align: center; }
