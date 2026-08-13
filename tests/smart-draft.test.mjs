@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows } from '../modules/smart-draft.js';
+import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows } from '../public/modules/smart-draft.js';
 
 const draft = {
   title: '灰渠街地下诊所',

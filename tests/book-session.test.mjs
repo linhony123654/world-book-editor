@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { chooseInitialBookId, readLastBookId, rememberLastBookId } from '../modules/book-session.js';
+import { chooseInitialBookId, readLastBookId, rememberLastBookId } from '../public/modules/book-session.js';
 
 function fakeStorage() {
   const data = new Map();

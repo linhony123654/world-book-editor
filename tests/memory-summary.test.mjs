@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { summarizeToolTraceForMemory, containsToolCallSyntax } from '../modules/memory-summary.js';
+import { summarizeToolTraceForMemory, containsToolCallSyntax } from '../public/modules/memory-summary.js';
 
 test('summarizes tool operations as natural language without tool call syntax', () => {
   const summary = summarizeToolTraceForMemory([

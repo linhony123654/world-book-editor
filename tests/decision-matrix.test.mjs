@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildEntryDecision, mapDecisionToFields } from '../modules/worldbook-intelligence/decision-matrix.js';
+import { buildEntryDecision, mapDecisionToFields } from '../public/modules/worldbook-intelligence/decision-matrix.js';
 
 test('maps a scene plot hook decision to depth insertion with sticky timing', () => {
   const decision = buildEntryDecision({

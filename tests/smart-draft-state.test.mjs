@@ -7,7 +7,7 @@ import {
   takeActiveSmartDraft,
   clearActiveSmartDraft,
   getActiveSmartDraft
-} from '../modules/smart-draft-state.js';
+} from '../public/modules/smart-draft-state.js';
 
 test('keeps only the latest smart draft preview active', () => {
   const state = createSmartDraftState();

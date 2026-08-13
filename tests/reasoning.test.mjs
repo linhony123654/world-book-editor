@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { extractReasoningDelta, hasVisibleAssistantStream, reasoningDetailsShouldBeOpen, shouldCollapseReasoningAfterStream } from '../modules/reasoning.js';
+import { extractReasoningDelta, hasVisibleAssistantStream, reasoningDetailsShouldBeOpen, shouldCollapseReasoningAfterStream } from '../public/modules/reasoning.js';
 
 test('extracts DeepSeek reasoning_content delta', () => {
   assert.equal(extractReasoningDelta({ reasoning_content: '先分析需求' }), '先分析需求');

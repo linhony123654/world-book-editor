@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { normalizeChatVisibleLimit, visibleChatStartIndex } from '../modules/chat-view.js';
+import { normalizeChatVisibleLimit, visibleChatStartIndex } from '../public/modules/chat-view.js';
 
 test('normalizes chat visible limit with default 10', () => {
   assert.equal(normalizeChatVisibleLimit(null), 10);

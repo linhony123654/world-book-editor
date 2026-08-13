@@ -11,7 +11,7 @@ import {
   saveWritingTemplate,
   selectWritingTemplate,
   writingTemplateKey
-} from '../modules/writing-template.js';
+} from '../public/modules/writing-template.js';
 
 function memoryStorage() {
   const data = new Map();

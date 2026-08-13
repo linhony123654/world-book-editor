@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { planWorldbookEntry } from '../modules/worldbook-intelligence/index.js';
+import { planWorldbookEntry } from '../public/modules/worldbook-intelligence/index.js';
 
 const existingEntries = [
   { uid: 1, comment: '王都', key: ['王都'], content: '王国首都。', constant: false }

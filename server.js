@@ -8,15 +8,29 @@ const { Readable } = require('stream');
 const app = express();
 const PORT = process.env.PORT || 8084;
 
+app.disable('x-powered-by');
 app.use(express.json({ limit: '50mb' }));
 
-// 静态文件白名单：只暴露前端文件，数据库/源码/依赖目录一律 404
-const DENY_STATIC = /\.(db|db-wal|db-shm|sqlite|sqlite3)$|^\/node_modules\/|^\.(git|env|npmrc)/;
+// ===== 安全响应头 =====
 app.use((req, res, next) => {
-  if (DENY_STATIC.test(req.path)) return res.status(404).end();
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "font-src 'self' data:",
+    "object-src 'none'",
+    "base-uri 'self'"
+  ].join('; '));
   next();
 });
-app.use(express.static(path.join(__dirname), {
+
+// 只暴露 public/ 下的前端文件；数据库/源码/依赖目录一律不可访问
+app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0,
   setHeaders: (res) => res.set('Cache-Control', 'no-store')
 }));
@@ -66,6 +80,8 @@ function userForToken(token) {
   return db.prepare(`SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > datetime('now')`).get(token) || null;
 }
 function createSession(userId) {
+  // 顺手清理过期会话，防止 sessions 表无限增长
+  db.prepare(`DELETE FROM sessions WHERE expires_at <= datetime('now')`).run();
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))`).run(token, userId);
   return token;
@@ -77,11 +93,31 @@ function authRequired(req, res, next) {
   next();
 }
 
+// ===== 登录限流：每 IP 15 分钟最多 20 次尝试 =====
+const loginAttempts = new Map();
+function loginRateLimit(req, res, next) {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const rec = loginAttempts.get(ip) || { count: 0, firstAt: now };
+  if (now - rec.firstAt > 15 * 60 * 1000) { rec.count = 0; rec.firstAt = now; }
+  rec.count++;
+  loginAttempts.set(ip, rec);
+  if (rec.count > 20) return res.status(429).json({ error: '尝试次数过多，请 15 分钟后再试' });
+  next();
+}
+// 定期清理限流记录，防止 Map 无限增长
+setInterval(() => {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  for (const [ip, rec] of loginAttempts) {
+    if (rec.firstAt < cutoff) loginAttempts.delete(ip);
+  }
+}, 5 * 60 * 1000).unref();
+
 // ===== 认证 API =====
 app.get('/api/auth-state', (req, res) => {
   res.json({ initialized: hasUsers() });
 });
-app.post('/api/setup', (req, res) => {
+app.post('/api/setup', loginRateLimit, (req, res) => {
   if (hasUsers()) return res.status(403).json({ error: 'already initialized' });
   const username = String((req.body || {}).username || '').trim();
   const password = String((req.body || {}).password || '');
@@ -93,7 +129,7 @@ app.post('/api/setup', (req, res) => {
   const token = createSession(user.id);
   res.json({ token, username: user.username });
 });
-app.post('/api/login', (req, res) => {
+app.post('/api/login', loginRateLimit, (req, res) => {
   const username = String((req.body || {}).username || '').trim();
   const password = String((req.body || {}).password || '');
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
@@ -154,6 +190,8 @@ app.post('/api/books', (req, res) => {
 
 // ===== API: 保存世界书（自动保存） =====
 app.put('/api/books/:id', (req, res) => {
+  const existing = db.prepare('SELECT id FROM world_books WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
   const { data, name } = req.body;
   if (!data || !data.entries) return res.status(400).json({ error: 'invalid data' });
   const entryCount = Object.keys(data.entries).length;
@@ -168,7 +206,8 @@ app.put('/api/books/:id', (req, res) => {
 
 // ===== API: 删除世界书 =====
 app.delete('/api/books/:id', (req, res) => {
-  db.prepare('DELETE FROM world_books WHERE id = ?').run(req.params.id);
+  const result = db.prepare('DELETE FROM world_books WHERE id = ?').run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true });
 });
 
@@ -213,11 +252,15 @@ app.post('/api/proxy/models', async (req, res) => {
 app.post('/api/proxy/chat', async (req, res) => {
   const { url, key, body } = req.body || {};
   if (!url || !key || !body) return res.status(400).json({ error: '缺少 url / key / body' });
+  // 客户端断开（取消/超时/关页）时中止上游请求，避免资源泄漏
+  const ac = new AbortController();
+  res.on('close', () => { if (!res.writableEnded) ac.abort(); });
   try {
     const r = await fetch(normalizeBase(url) + '/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: ac.signal
     });
     res.status(r.status);
     res.set('Content-Type', r.headers.get('content-type') || 'text/event-stream');
@@ -225,6 +268,7 @@ app.post('/api/proxy/chat', async (req, res) => {
     if (!r.body) { res.end(); return; }
     Readable.fromWeb(r.body).pipe(res);
   } catch (e) {
+    if (ac.signal.aborted) return; // 客户端已断开，无需响应
     res.status(502).json({ error: '代理请求失败: ' + e.message });
   }
 });
