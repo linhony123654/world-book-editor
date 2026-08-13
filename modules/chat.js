@@ -1830,6 +1830,7 @@ async function toolCreateSmartEntry(args) {
   const r = commitSmartDraft(completed);
   const related = checkRelatedEntries(args);
   if (related) r.detail += related;
+  r.detail += checkNewEntry(r.uid, completed);
   return r;
 }
 
@@ -1911,7 +1912,21 @@ function commitSmartDraft(draft) {
   entries.push(entry);
   renderSidebar();
   scheduleSave();
-  return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid) };
+  return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid), uid };
+}
+
+// 创建后体检联动：新条目自身风险 + 与全书的冲突/共享提示
+function checkNewEntry(uid, draft) {
+  const lines = [];
+  for (const c of (draft.checks || [])) {
+    if (c.level === 'warning' || c.level === 'danger') lines.push('[' + c.level + '] ' + c.message);
+  }
+  const report = toolCheckEntries();
+  for (const l of String(report.detail || '').split('\n')) {
+    if (l.includes('#' + uid)) lines.push(l);
+  }
+  if (!lines.length) return '\n新条目体检：未发现风险。';
+  return '\n新条目体检：\n' + lines.join('\n');
 }
 
 function smartDraftDetail(draft, uid) {
