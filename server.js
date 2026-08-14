@@ -73,6 +73,14 @@ db.exec(`
     sessions TEXT,
     active_session TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS cloud_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    provider TEXT NOT NULL DEFAULT 'webdav',
+    webdav_url TEXT, webdav_user TEXT, webdav_pass TEXT,
+    s3_endpoint TEXT, s3_region TEXT, s3_bucket TEXT, s3_access_key TEXT, s3_secret_key TEXT,
+    remote_path TEXT NOT NULL DEFAULT 'world-books-backup.json',
+    updated_at TEXT DEFAULT (datetime('now'))
   )
 `);
 
@@ -179,7 +187,7 @@ app.post('/api/change-password', authRequired, (req, res) => {
 });
 
 // 数据 API 全部需要登录
-app.use(['/api/books', '/api/proxy', '/api/test-tool', '/api/ai-data'], authRequired);
+app.use(['/api/books', '/api/proxy', '/api/test-tool', '/api/ai-data', '/api/cloud'], authRequired);
 
 // ===== AI 会话与记忆持久化（按世界书，替代 localStorage） =====
 app.get('/api/ai-data/:bookId', (req, res) => {
@@ -211,6 +219,281 @@ app.put('/api/ai-data/:bookId', (req, res) => {
   const upd = kv.map(k => k === 'updated_at' ? 'updated_at = excluded.updated_at' : k + ' = excluded.' + k).join(', ');
   db.prepare(`INSERT INTO ai_data (book_id, ${kv.join(', ')}) VALUES (?, ${ph.join(', ')}) ON CONFLICT(book_id) DO UPDATE SET ${upd}`).run(bookId, ...vals);
   res.json({ ok: true });
+});
+
+// ===== 外置存储同步（WebDAV / S3 兼容端点，数据级 JSON bundle） =====
+// bundle 格式：{"format":"wbe-cloud-bundle","version":1,"exportedAt":ISO,"books":[...],"aiData":[...]}
+// 只同步世界书与 AI 记忆/会话，不含用户账号；恢复前自动备份本地到 backups/cloud/
+
+function getCloudConfig() {
+  const row = db.prepare('SELECT * FROM cloud_config WHERE id = 1').get();
+  return row || null;
+}
+function saveCloudConfig(cfg) {
+  const cols = ['provider', 'webdav_url', 'webdav_user', 'webdav_pass', 's3_endpoint', 's3_region', 's3_bucket', 's3_access_key', 's3_secret_key', 'remote_path', 'updated_at'];
+  const kv = cols.filter(c => c !== 'updated_at' && cfg[c] !== undefined).map(c => c);
+  const ph = kv.map(() => '?');
+  const upd = kv.map(c => c + ' = excluded.' + c);
+  db.prepare(`INSERT INTO cloud_config (id, ${kv.join(', ')}, updated_at) VALUES (1, ${ph.join(', ')}, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET ${upd.join(', ')}, updated_at = excluded.updated_at`).run(...kv.map(c => cfg[c]));
+}
+
+function buildBundle() {
+  const books = db.prepare('SELECT id, name, data, entry_count FROM world_books ORDER BY id').all();
+  const ai = db.prepare('SELECT book_id, memory, sessions, active_session FROM ai_data ORDER BY book_id').all();
+  return {
+    format: 'wbe-cloud-bundle',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    books: books.map(b => ({ id: b.id, name: b.name, entry_count: b.entry_count, data: JSON.parse(b.data) })),
+    aiData: ai.map(a => ({
+      book_id: a.book_id,
+      memory: a.memory == null ? null : JSON.parse(a.memory),
+      sessions: a.sessions == null ? null : JSON.parse(a.sessions),
+      active_session: a.active_session
+    }))
+  };
+}
+
+// 恢复前把当前库完整导出备份到 backups/cloud/
+function backupPreRestore() {
+  try {
+    const dir = path.join(__dirname, 'backups', 'cloud');
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.writeFileSync(path.join(dir, ts + '-pre-restore.json'), JSON.stringify(buildBundle()));
+    // 保留最近 10 份恢复前备份
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
+    while (files.length > 10) fs.unlinkSync(path.join(dir, files.shift()));
+  } catch (e) {
+    console.error('[WBE] 恢复前备份失败:', e.message);
+  }
+}
+
+function restoreBundle(bundle) {
+  if (!bundle || bundle.format !== 'wbe-cloud-bundle' || !Array.isArray(bundle.books)) {
+    throw new Error('不是有效的云端备份文件');
+  }
+  backupPreRestore();
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM world_books').run();
+    db.prepare('DELETE FROM ai_data').run();
+    const insBook = db.prepare('INSERT INTO world_books (id, name, data, entry_count) VALUES (?, ?, ?, ?)');
+    const insAi = db.prepare('INSERT INTO ai_data (book_id, memory, sessions, active_session) VALUES (?, ?, ?, ?)');
+    for (const b of bundle.books) {
+      const entryCount = Number.isInteger(b.entry_count) ? b.entry_count : Object.keys((b.data && b.data.entries) || {}).length;
+      insBook.run(b.id, String(b.name || '未命名'), JSON.stringify(b.data || { entries: {} }), entryCount);
+    }
+    for (const a of bundle.aiData || []) {
+      insAi.run(a.book_id, a.memory == null ? null : JSON.stringify(a.memory), a.sessions == null ? null : JSON.stringify(a.sessions), a.active_session || null);
+    }
+  });
+  tx();
+  return { books: bundle.books.length, ai: (bundle.aiData || []).length };
+}
+
+// ---- WebDAV（纯 HTTP PUT/GET + Basic Auth） ----
+function webdavAuthHeader(cfg) {
+  if (!cfg.webdav_user) return {};
+  return { 'Authorization': 'Basic ' + Buffer.from(cfg.webdav_user + ':' + (cfg.webdav_pass || '')).toString('base64') };
+}
+function webdavTarget(cfg) {
+  let base = String(cfg.webdav_url || '').trim().replace(/\/+$/, '');
+  const p = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
+  return base + '/' + p;
+}
+async function webdavPut(cfg, body) {
+  const r = await fetch(webdavTarget(cfg), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...webdavAuthHeader(cfg) },
+    body
+  });
+  if (!r.ok && r.status !== 201 && r.status !== 204) throw new Error('WebDAV PUT ' + r.status);
+  return r;
+}
+async function webdavGet(cfg) {
+  const r = await fetch(webdavTarget(cfg), { headers: { ...webdavAuthHeader(cfg) } });
+  if (!r.ok) throw new Error('WebDAV GET ' + r.status);
+  return r.text();
+}
+
+// ---- S3 兼容端点（手写 SigV4，无 SDK 依赖；覆盖 AWS/OSS/COS/R2/MinIO） ----
+function s3Sha256hex(data) {
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+function s3Hmac(key, data) {
+  return crypto.createHmac('sha256', key).update(data).digest();
+}
+function s3EncodePath(p) {
+  return p.split('/').map(seg => encodeURIComponent(seg).replace(/%2F/gi, '/')).join('/');
+}
+// 生成 SigV4 请求头（PUT/GET 对象）
+function s3Headers(cfg, method, objectPath, body, extraHeaders) {
+  const endpoint = String(cfg.s3_endpoint || '').trim().replace(/\/+$/, '');
+  const region = String(cfg.s3_region || 'us-east-1').trim();
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const dateStamp = amzDate.slice(0, 8);
+  const canonicalUri = '/' + s3EncodePath(String(cfg.s3_bucket || '') + '/' + String(objectPath || '').replace(/^\/+/, ''));
+  const payloadHash = body == null ? s3Sha256hex('') : s3Sha256hex(body);
+  const host = new URL(endpoint).host;
+  const headers = {
+    'host': host,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+    ...extraHeaders
+  };
+  const canonicalHeaders = Object.keys(headers).sort().map(k => k + ':' + headers[k]).join('\n') + '\n';
+  const signedHeaders = Object.keys(headers).sort().join(';');
+  const canonicalRequest = [
+    method, canonicalUri, '',
+    canonicalHeaders, signedHeaders, payloadHash
+  ].join('\n');
+  const scope = dateStamp + '/' + region + '/s3/aws4_request';
+  const stringToSign = [
+    'AWS4-HMAC-SHA256', amzDate, scope,
+    s3Sha256hex(canonicalRequest)
+  ].join('\n');
+  const kDate = s3Hmac('AWS4' + cfg.s3_secret_key, dateStamp);
+  const kRegion = s3Hmac(kDate, region);
+  const kService = s3Hmac(kRegion, 's3');
+  const kSigning = s3Hmac(kService, 'aws4_request');
+  const signature = crypto.createHmac('sha256', kSigning).update(stringToSign).digest('hex');
+  return {
+    'Authorization': 'AWS4-HMAC-SHA256 Credential=' + cfg.s3_access_key + '/' + scope + ', SignedHeaders=' + signedHeaders + ', Signature=' + signature,
+    'X-Amz-Date': amzDate,
+    'x-amz-content-sha256': payloadHash
+  };
+}
+function s3ObjectUrl(cfg, objectPath) {
+  const endpoint = String(cfg.s3_endpoint || '').trim().replace(/\/+$/, '');
+  return endpoint + '/' + s3EncodePath(String(cfg.s3_bucket || '') + '/' + String(objectPath || '').replace(/^\/+/, ''));
+}
+async function s3Put(cfg, body) {
+  const objectPath = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
+  const headers = s3Headers(cfg, 'PUT', objectPath, body, { 'Content-Type': 'application/json' });
+  const r = await fetch(s3ObjectUrl(cfg, objectPath), { method: 'PUT', headers, body });
+  if (!r.ok) throw new Error('S3 PUT ' + r.status + ': ' + (await r.text()).slice(0, 200));
+  return r;
+}
+async function s3Get(cfg) {
+  const objectPath = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
+  const headers = s3Headers(cfg, 'GET', objectPath, null);
+  const r = await fetch(s3ObjectUrl(cfg, objectPath), { headers });
+  if (!r.ok) throw new Error('S3 GET ' + r.status + ': ' + (await r.text()).slice(0, 200));
+  return r.text();
+}
+
+// ---- 云端动作统一入口 ----
+function cloudAction(cfg) {
+  return {
+    upload: (body) => cfg.provider === 's3' ? s3Put(cfg, body) : webdavPut(cfg, body),
+    download: () => cfg.provider === 's3' ? s3Get(cfg) : webdavGet(cfg)
+  };
+}
+async function cloudTest(cfg) {
+  if (cfg.provider === 's3') {
+    if (!cfg.s3_endpoint || !cfg.s3_bucket || !cfg.s3_access_key || !cfg.s3_secret_key) return { ok: false, error: 'S3 配置不完整' };
+    // ListObjectsV2（max-keys=1）验证凭据与网络
+    const objectPath = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
+    const qs = '?list-type=2&max-keys=1&prefix=' + encodeURIComponent(objectPath);
+    const endpoint = String(cfg.s3_endpoint || '').trim().replace(/\/+$/, '');
+    const region = String(cfg.s3_region || 'us-east-1').trim();
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+    const dateStamp = amzDate.slice(0, 8);
+    const canonicalUri = '/' + s3EncodePath(String(cfg.s3_bucket || ''));
+    const payloadHash = s3Sha256hex('');
+    const host = new URL(endpoint).host;
+    const headers = { 'host': host, 'x-amz-content-sha256': payloadHash, 'x-amz-date': amzDate };
+    const canonicalHeaders = Object.keys(headers).sort().map(k => k + ':' + headers[k]).join('\n') + '\n';
+    const signedHeaders = Object.keys(headers).sort().join(';');
+    const canonicalRequest = ['GET', canonicalUri, qs.slice(1), canonicalHeaders, signedHeaders, payloadHash].join('\n');
+    const scope = dateStamp + '/' + region + '/s3/aws4_request';
+    const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, s3Sha256hex(canonicalRequest)].join('\n');
+    const kDate = s3Hmac('AWS4' + cfg.s3_secret_key, dateStamp);
+    const kRegion = s3Hmac(kDate, region);
+    const kService = s3Hmac(kRegion, 's3');
+    const kSigning = s3Hmac(kService, 'aws4_request');
+    const signature = crypto.createHmac('sha256', kSigning).update(stringToSign).digest('hex');
+    const auth = 'AWS4-HMAC-SHA256 Credential=' + cfg.s3_access_key + '/' + scope + ', SignedHeaders=' + signedHeaders + ', Signature=' + signature;
+    try {
+      const r = await fetch(endpoint + canonicalUri + qs, { headers: { 'Authorization': auth, 'X-Amz-Date': amzDate, 'x-amz-content-sha256': payloadHash } });
+      if (!r.ok) return { ok: false, error: 'S3 连接失败 ' + r.status + ': ' + (await r.text()).slice(0, 160) };
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: 'S3 连接失败: ' + e.message };
+    }
+  }
+  // WebDAV：GET 目标文件（404 表示可写不可读？不——用 PROPFIND 太重；GET 200/404 都算连通）
+  if (!cfg.webdav_url) return { ok: false, error: 'WebDAV 配置不完整' };
+  try {
+    const r = await fetch(webdavTarget(cfg), { method: 'HEAD', headers: { ...webdavAuthHeader(cfg) } });
+    if (r.status === 401 || r.status === 403) return { ok: false, error: 'WebDAV 认证失败（' + r.status + '）' };
+    if (r.ok || r.status === 404) return { ok: true };
+    return { ok: false, error: 'WebDAV 连接异常 ' + r.status };
+  } catch (e) {
+    return { ok: false, error: 'WebDAV 连接失败: ' + e.message };
+  }
+}
+
+// ===== API: 外置存储 =====
+app.get('/api/cloud/config', (req, res) => {
+  const cfg = getCloudConfig();
+  res.json(cfg || { provider: 'webdav', remote_path: 'world-books-backup.json' });
+});
+
+app.put('/api/cloud/config', (req, res) => {
+  const body = req.body || {};
+  const provider = body.provider === 's3' ? 's3' : 'webdav';
+  const cfg = { provider };
+  if (provider === 's3') {
+    cfg.s3_endpoint = String(body.s3_endpoint || '').trim();
+    cfg.s3_region = String(body.s3_region || 'us-east-1').trim();
+    cfg.s3_bucket = String(body.s3_bucket || '').trim();
+    cfg.s3_access_key = String(body.s3_access_key || '').trim();
+    cfg.s3_secret_key = String(body.s3_secret_key || '').trim();
+  } else {
+    cfg.webdav_url = String(body.webdav_url || '').trim();
+    cfg.webdav_user = String(body.webdav_user || '').trim();
+    cfg.webdav_pass = String(body.webdav_pass || '');
+  }
+  cfg.remote_path = String(body.remote_path || 'world-books-backup.json').trim().replace(/^\/+/, '') || 'world-books-backup.json';
+  saveCloudConfig(cfg);
+  res.json({ ok: true });
+});
+
+app.post('/api/cloud/test', (req, res) => {
+  const cfg = getCloudConfig();
+  if (!cfg) return res.status(400).json({ error: '尚未配置外置存储' });
+  cloudTest(cfg).then(r => res.json(r));
+});
+
+app.post('/api/cloud/upload', async (req, res) => {
+  const cfg = getCloudConfig();
+  if (!cfg) return res.status(400).json({ error: '尚未配置外置存储' });
+  try {
+    const bundle = buildBundle();
+    await cloudAction(cfg).upload(JSON.stringify(bundle));
+    saveCloudConfig({ ...cfg, updated_at: new Date().toISOString() });
+    res.json({ ok: true, books: bundle.books.length, exportedAt: bundle.exportedAt });
+  } catch (e) {
+    res.status(502).json({ error: '上传失败: ' + e.message });
+  }
+});
+
+app.post('/api/cloud/download', async (req, res) => {
+  const cfg = getCloudConfig();
+  if (!cfg) return res.status(400).json({ error: '尚未配置外置存储' });
+  try {
+    const text = await cloudAction(cfg).download();
+    let bundle;
+    try { bundle = JSON.parse(text); } catch (e) { throw new Error('云端文件不是有效 JSON'); }
+    const stat = restoreBundle(bundle);
+    res.json({ ok: true, ...stat, exportedAt: bundle.exportedAt || null });
+  } catch (e) {
+    res.status(502).json({ error: '拉取失败: ' + e.message });
+  }
 });
 
 // ===== API: 列出所有世界书 =====

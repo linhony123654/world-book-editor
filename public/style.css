@@ -751,3 +751,13 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
 /* ===== 批量选择入口按钮（toolbar 右侧） ===== */
 .search-actions { display: flex; justify-content: flex-end; padding-top: 12px; }
 .search-actions .icon-btn { border: 1px solid var(--line); }
+
+/* ===== 外置存储配置 ===== */
+.cloud-provider-row { display: flex; gap: 14px; margin-top: 14px; }
+.cloud-provider { display: flex; align-items: center; gap: 6px; color: var(--ink); font-size: 11px; font-weight: 750; letter-spacing: .08em; cursor: pointer; }
+.cloud-provider input { accent-color: var(--wine); }
+.cloud-row2 { display: flex; gap: 10px; }
+.cloud-row2 .config-key-input { flex: 1; min-width: 0; }
+.cloud-status { display: block; margin-top: 10px; color: var(--muted); font-size: 9px; letter-spacing: .06em; }
+.cloud-status.ok { color: var(--forest); }
+.cloud-status.err { color: var(--danger); }

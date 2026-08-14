@@ -345,6 +345,41 @@
             <button class="action" id="reloadBtn" style="width:82px;">Reload</button>
           </div>
         </div>
+
+        <div class="settings-group">
+          <div class="setting setting-stack" id="cloudSection">
+            <div style="min-width:0">
+              <strong>外置存储</strong>
+              <small>把全部世界书与 AI 记忆备份到 WebDAV 或 S3 兼容端点（OSS/COS/R2/MinIO）。「从云端拉取」会先自动备份本地再整体覆盖；换设备后配好同样的地址即可继续编辑。</small>
+            </div>
+            <div class="cloud-provider-row" role="radiogroup" aria-label="外置存储类型">
+              <label class="cloud-provider"><input type="radio" name="cloudProvider" value="webdav" id="cloudProviderWebdav" checked /> WebDAV</label>
+              <label class="cloud-provider"><input type="radio" name="cloudProvider" value="s3" id="cloudProviderS3" /> S3 兼容</label>
+            </div>
+            <div id="cloudFieldsWebdav">
+              <input class="config-key-input" id="cloudWebdavUrl" type="url" placeholder="WebDAV 地址，如 https://dav.example.com/wbe/" autocomplete="off" aria-label="WebDAV 地址" />
+              <input class="config-key-input" id="cloudWebdavUser" type="text" placeholder="用户名" autocomplete="off" aria-label="WebDAV 用户名" />
+              <input class="config-key-input" id="cloudWebdavPass" type="password" placeholder="密码" autocomplete="off" aria-label="WebDAV 密码" />
+            </div>
+            <div id="cloudFieldsS3" hidden>
+              <input class="config-key-input" id="cloudS3Endpoint" type="url" placeholder="Endpoint，如 https://oss-cn-hangzhou.aliyuncs.com" autocomplete="off" aria-label="S3 Endpoint" />
+              <div class="cloud-row2">
+                <input class="config-key-input" id="cloudS3Region" type="text" placeholder="Region，如 us-east-1" autocomplete="off" aria-label="S3 Region" />
+                <input class="config-key-input" id="cloudS3Bucket" type="text" placeholder="Bucket 名称" autocomplete="off" aria-label="S3 Bucket" />
+              </div>
+              <input class="config-key-input" id="cloudS3AccessKey" type="text" placeholder="Access Key" autocomplete="off" aria-label="S3 Access Key" />
+              <input class="config-key-input" id="cloudS3SecretKey" type="password" placeholder="Secret Key" autocomplete="off" aria-label="S3 Secret Key" />
+            </div>
+            <input class="config-key-input" id="cloudRemotePath" type="text" placeholder="远端文件名，如 world-books-backup.json" autocomplete="off" aria-label="远端文件名" />
+            <div class="config-key-actions">
+              <button class="action" id="cloudSaveBtn">保存配置</button>
+              <button class="action" id="cloudTestBtn">测试连接</button>
+              <button class="action primary" id="cloudUploadBtn">上传到云端</button>
+              <button class="action danger" id="cloudDownloadBtn">从云端拉取</button>
+            </div>
+            <small class="cloud-status" id="cloudStatus"></small>
+          </div>
+        </div>
       </div>
     </section>
 
