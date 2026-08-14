@@ -8,7 +8,7 @@ export const TOOL_NAMES = [
   'plan_smart_entry', 'create_smart_entry',
   'delete_entry', 'delete_entries', 'batch_edit', 'replace_text', 'manage_keys', 'move_entry',
   'list_entries', 'toggle_entry', 'reorder_entry', 'duplicate_entry',
-  'merge_entries', 'split_entry', 'check_entries', 'test_triggers', 'export_book',
+  'merge_entries', 'split_entry', 'check_entries', 'test_triggers', 'export_book', 'find_duplicates',
   'undo_last', 'get_book_info', 'list_books', 'switch_book', 'create_book', 'rename_book', 'delete_book'
 ];
 

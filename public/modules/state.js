@@ -143,10 +143,12 @@ export const undoStack = [];
 export function snapshotForUndo(label) {
   if (!worldBook) return;
   try {
-    undoStack.push({ label: label || '操作', data: JSON.parse(JSON.stringify(worldBook)) });
+    undoStack.push({ label: label || '操作', ts: Date.now(), data: JSON.parse(JSON.stringify(worldBook)) });
     if (undoStack.length > 20) undoStack.shift();
   } catch (e) {}
 }
+
+export function undoStackLength() { return undoStack.length; }
 
 // 撤销上一次操作；原地恢复 worldBook.entries，保持引用稳定。返回被撤销操作的标签，无可撤销返回 null
 export function restoreUndo() {
@@ -159,4 +161,26 @@ export function restoreUndo() {
   window._wbe_entries = entries;
   dirty = true;
   return snap.label;
+}
+
+// 回滚到指定栈深度（批量撤销，如 AI 一轮多步操作）。返回被撤销操作的标签数组；无可撤销返回 null
+// targetLength = 0 时回滚全部（恢复到第一条快照）
+export function restoreUndoTo(targetLength) {
+  if (!worldBook || undoStack.length <= targetLength) return null;
+  const labels = [];
+  let lastSnap = null;
+  while (undoStack.length > targetLength) {
+    lastSnap = undoStack.pop();
+    labels.unshift(lastSnap.label);
+  }
+  const snap = undoStack[undoStack.length - 1] || lastSnap;
+  if (snap) {
+    Object.keys(worldBook.entries).forEach(k => delete worldBook.entries[k]);
+    Object.assign(worldBook.entries, JSON.parse(JSON.stringify(snap.data.entries)));
+    entries.length = 0;
+    entries.push(...Object.values(worldBook.entries));
+    window._wbe_entries = entries;
+    dirty = true;
+  }
+  return labels.length ? labels : null;
 }

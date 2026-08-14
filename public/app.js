@@ -5,7 +5,7 @@ import { renderSidebar, initSidebar } from './modules/sidebar.js';
 import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
 import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
 import { initBooks, renderArchives } from './modules/books.js';
-import { entries, currentUid, restoreUndo } from './modules/state.js';
+import { entries, currentUid, restoreUndo, undoStack, restoreUndoTo } from './modules/state.js';
 import { chooseInitialBookId } from './modules/book-session.js';
 import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
 import { checkAuth, bindAuth, showLoginScreen, authHeaders } from './modules/auth.js';
@@ -107,6 +107,8 @@ async function bootApp() {
 
   initTheme();
   initAutoSaveSwitch();
+  // AI 改动卡片点击条目 → 跳编辑器
+  document.addEventListener('wbe:goto-editor', () => setScreen('editor'));
 
   const books = await loadBookList();
   if (books.length > 0) {
@@ -172,7 +174,7 @@ function undoLast() {
 
 function bindUndo() {
   const btn = $('undoBtn');
-  if (btn) btn.addEventListener('click', undoLast);
+  if (btn) btn.addEventListener('click', openUndoModal);
   // Ctrl/Cmd+Z：文本输入框内交给浏览器自身撤销，不拦截
   document.addEventListener('keydown', e => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
@@ -189,6 +191,46 @@ function bindUndo() {
     e.preventDefault();
     manualSave();
   });
+}
+
+// ===== 撤销历史弹窗：列出最近操作，点任一条回滚 =====
+function openUndoModal() {
+  const modal = $('undoModal');
+  if (!modal) return;
+  const listEl = $('undoList');
+  if (listEl) {
+    const stack = undoStack.slice();
+    if (!stack.length) {
+      listEl.innerHTML = '<div class="undo-empty">暂无撤销历史。编辑条目或让 AI 修改后，操作会出现在这里。</div>';
+    } else {
+      // 最新在顶部：栈索引 idx（0 = 最旧）↔ 显示行 i（0 = 最新）
+      listEl.innerHTML = stack.map((s, i) => {
+        const idx = stack.length - 1 - i;
+        const ts = s.ts ? new Date(s.ts).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+        return '<button type="button" class="undo-row" data-idx="' + idx + '">' +
+          '<span class="undo-no">' + (i + 1) + '</span>' +
+          '<span class="undo-label">' + escHtml(s.label || '操作') + '</span>' +
+          (ts ? '<small class="undo-ts">' + ts + '</small>' : '') +
+          '</button>';
+      }).join('');
+      listEl.querySelectorAll('.undo-row').forEach(row => {
+        row.addEventListener('click', () => {
+          const idx = parseInt(row.dataset.idx);
+          // 回滚到第 idx 条快照：pop 掉它及之后的所有快照，恢复该条内容
+          restoreUndoTo(idx);
+          renderSidebar();
+          const cur = entries.find(e => e.uid === currentUid) || entries[0];
+          if (cur) onSelectEntry(cur.uid);
+          else renderEditorEmpty();
+          scheduleSave();
+          closeModal(modal);
+          const label = undoStack[idx] ? undoStack[idx].label : '最早记录';
+          showToast('已回滚到「' + label + '」', 'success');
+        });
+      });
+    }
+  }
+  openModal(modal, { focus: $('undoList') });
 }
 
 function openEntryModal() {

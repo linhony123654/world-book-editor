@@ -57,6 +57,17 @@ function hl(text, q) {
   return safe.slice(0, idx) + '<mark>' + safe.slice(idx, idx + qs.length) + '</mark>' + safe.slice(idx + qs.length);
 }
 
+// 语义类型中文标签（与 index.html 类型筛选下拉一致）
+const TYPE_LABELS = {
+  character: '人物', location: '地点', geography: '地理', organization: '组织', faction: '阵营',
+  law: '法律', history: '历史', economy: '经济', magic: '魔法', culture: '文化',
+  event: '事件', rule: '规则', item: '物品', concept: '概念', relationship: '关系', style: '文风'
+};
+function typeLabelOf(e) {
+  const t = e && e.extensions && e.extensions.wbe && e.extensions.wbe.semanticType;
+  return t ? (TYPE_LABELS[t] || t) : '';
+}
+
 function statusOf(e) {
   if (e.disable) return { cls: 'off', label: 'Disabled' };
   if (e.constant) return { cls: 'const', label: 'Always on' };
@@ -158,10 +169,11 @@ function renderGrid(list) {
   if (!list.length) { el.innerHTML = ''; return; }
   el.innerHTML = list.map(e => {
     const st = statusOf(e);
+    const typeLabel = typeLabelOf(e);
     const selCls = selectMode && selectedSet.has(e.uid) ? ' selected' : '';
     return '<button type="button" class="entry-card' + selCls + '" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
       '<div class="entry-no">' + pad2(e.uid) + '</div>' +
-      '<div class="type">' + escHtml(typeOf(e)) + '</div>' +
+      '<div class="type">' + escHtml(typeOf(e)) + (typeLabel ? '<span class="type-badge">' + escHtml(typeLabel) + '</span>' : '') + '</div>' +
       '<h3>' + hl(e.comment || '(无标题)', searchQuery) + '</h3>' +
       '<p>' + hl(preview(e).slice(0, 90), searchQuery) + '</p>' +
       '<div class="entry-status ' + st.cls + '"><span class="dot"></span>' + st.label + '</div>' +
@@ -187,11 +199,12 @@ function renderIndex(list) {
   el.innerHTML = shown.map(e => {
     const st = statusOf(e);
     const kw = (e.key || []).slice(0, 3).join(' · ') || (e.constant ? '常驻' : '—');
+    const typeLabel = typeLabelOf(e);
     const selCls = selectMode && selectedSet.has(e.uid) ? ' selected' : '';
     return '<button type="button" class="index-row' + selCls + '" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
       '<div class="index-no">' + pad2(e.uid) + '</div>' +
       '<div class="index-copy">' +
-        '<strong>' + hl(e.comment || '(无标题)', searchQuery) + '</strong>' +
+        '<strong>' + hl(e.comment || '(无标题)', searchQuery) + (typeLabel ? ' <span class="type-badge type-badge-sm">' + escHtml(typeLabel) + '</span>' : '') + '</strong>' +
         '<small>' + escHtml(kw) + '</small>' +
       '</div>' +
       '<div class="index-state ' + st.cls + '"><span class="dot"></span>' + st.label + '</div>' +

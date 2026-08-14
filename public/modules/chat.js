@@ -1,7 +1,7 @@
 // ===== AI 聊天 =====
 import { escHtml, escAttr, escUrl, $, estimateTokens } from './utils.js';
 import { TOOL_NAMES, TOOL_NAME_PATTERN } from './tool-names.js';
-import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo } from './state.js';
+import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo, undoStackLength, restoreUndoTo } from './state.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
 import { renderEditor, renderEditorEmpty } from './editor.js';
 import { scheduleSave, apiRequest, loadBookList, loadBook, createBook, renameBook, deleteBook } from './api.js';
@@ -301,6 +301,9 @@ function deleteSession(id) {
   renderSessionList();
 }
 
+let sessionQuery = ''; // 会话搜索词
+let memoryQuery = '';  // 记忆搜索词
+
 function renderSessionList() {
   const listEl = $('sessionList');
   if (!listEl) return;
@@ -308,7 +311,15 @@ function renderSessionList() {
     listEl.innerHTML = '<div class="session-empty">还没有会话，点「+ 新建会话」开一个。</div>';
     return;
   }
-  listEl.innerHTML = sessions.slice().sort((a, b) => b.updatedAt - a.updatedAt).map(s => {
+  const q = sessionQuery.toLowerCase();
+  const shown = sessions
+    .filter(s => !q || (s.title || '').toLowerCase().includes(q) || (s.messages || []).some(m => String(m.content || '').toLowerCase().includes(q)))
+    .slice().sort((a, b) => b.updatedAt - a.updatedAt);
+  if (!shown.length) {
+    listEl.innerHTML = '<div class="session-empty">没有匹配「' + escHtml(sessionQuery) + '」的会话。</div>';
+    return;
+  }
+  listEl.innerHTML = shown.map(s => {
     const active = s.id === activeSessionId ? ' session-item-active' : '';
     const t = new Date(s.updatedAt);
     const ts = t.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -387,25 +398,33 @@ function renderMemoryList() {
   const list = $('memoryList');
   if (!list) return;
   const recent = recentTurns();
+  const q = memoryQuery.toLowerCase();
+  const match = s => !q || String(s || '').toLowerCase().includes(q);
+  const rollups = memory.rollups.filter(r => match(r.text));
+  const recentShown = recent.filter(t => match(t.user) || match(t.actionSummary) || match(t.toolSummary) || match(t.reply));
   if (!memory.rollups.length && !recent.length) {
     list.innerHTML = '<div class="memory-empty">暂无记忆。AI 在本书的每个回合会自动记录小总结，每 ' + ROLLUP_EVERY + ' 回合 AI 整合成一段阶段总结。</div>';
     return;
   }
+  if (q && !rollups.length && !recentShown.length) {
+    list.innerHTML = '<div class="memory-empty">没有匹配「' + escHtml(memoryQuery) + '」的记忆。</div>';
+    return;
+  }
   let html = '';
   if (isRollingUp) html += '<div class="memory-rolling">⟳ 正在整合阶段总结…</div>';
-  if (memory.rollups.length) {
+  if (rollups.length) {
     html += '<div class="memory-section-label">阶段总结 · DIGEST</div>';
-    html += memory.rollups.map((r, i) =>
+    html += rollups.map((r, i) =>
       '<div class="memory-rollup"><span class="memory-no">§' + (i + 1) + '</span>' +
       '<div class="memory-copy"><small class="memory-range">回合 ' + (r.from + 1) + '–' + r.to + '</small>' +
       '<p>' + escHtml(r.text) + '</p></div></div>'
     ).join('');
   }
   html += '<div class="memory-section-label">近期记忆 · RECENT</div>';
-  if (!recent.length) {
-    html += '<div class="memory-empty-mini">（已全部整合进阶段总结）</div>';
+  if (!recentShown.length) {
+    html += '<div class="memory-empty-mini">' + (q ? '（无匹配）' : '（已全部整合进阶段总结）') + '</div>';
   } else {
-    html += recent.map((t, i) => {
+    html += recentShown.map((t, i) => {
       const no = memory.rolledUpCount + i + 1;
       const tools = t.toolSummary ? '<small class="memory-tools">🔧 ' + escHtml(t.toolSummary) + '</small>' : '';
       const action = t.actionSummary ? '<small class="memory-action">' + escHtml(t.actionSummary) + '</small>' : '';
@@ -702,6 +721,16 @@ export function initChat() {
   // 记忆按钮 + 弹窗
   const $mem = $('chatMemoryBtn');
   if ($mem) $mem.addEventListener('click', openMemoryModal);
+  const $sessionSearch = $('sessionSearchInput');
+  if ($sessionSearch) $sessionSearch.addEventListener('input', () => {
+    sessionQuery = $sessionSearch.value.trim();
+    renderSessionList();
+  });
+  const $memorySearch = $('memorySearchInput');
+  if ($memorySearch) $memorySearch.addEventListener('input', () => {
+    memoryQuery = $memorySearch.value.trim();
+    renderMemoryList();
+  });
   const $openTemplate = $('openTemplateBtn');
   if ($openTemplate) $openTemplate.addEventListener('click', openTemplateModal);
   const $saveTemplate = $('saveTemplateBtn');
@@ -1198,6 +1227,11 @@ function truncateToolDetail(detail) {
 
 // 单个工具执行异常隔离：出错时把错误消息作为结果返回给模型，继续后续工具
 async function safeExecuteTool(name, args) {
+  // 本回合第一个改写工具执行前打一个「回合开始」快照，作为一键撤销的精确回滚点
+  if (turnUndoBase === -1 && name !== 'undo_last') {
+    snapshotForUndo('AI 回合开始');
+    turnUndoBase = undoStackLength();
+  }
   try {
     return await executeTool(name, args);
   } catch (e) {
@@ -1275,6 +1309,9 @@ async function sendChat(prevText) {
   const bookIdAtStart = currentBookId;
   // 本回合内 AI 调用了哪些工具及结果摘要，用于生成自然语言记忆。
   const turnTrace = [];
+  // 本回合的条目级改动（新增/修改/删除），用于渲染「本轮改动」卡片与一键撤销
+  const turnChanges = [];
+  turnUndoBase = -1; // -1 = 本回合尚无改写工具执行（首个工具执行时打「回合开始」快照）
   setSendBusy(true);
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -1327,6 +1364,7 @@ async function sendChat(prevText) {
           }
           const r = await safeExecuteTool(tc.function.name, args);
           turnTrace.push(tc.function.name + ': ' + r.summary);
+          if (r.changes && r.changes.length) turnChanges.push(...r.changes.map(c => ({ tool: tc.function.name, ...c })));
           appendChatMessage('tool', tc.function.name + ': ' + r.summary);
           // 原生 function calling 协议要求一个 tool_call_id 对应一条 tool 消息，不能合并；
           // 用截断控制每条 detail 大小，控制整体膨胀
@@ -1345,6 +1383,7 @@ async function sendChat(prevText) {
         for (const tc of textToolCalls) {
           const r = await safeExecuteTool(tc.name, tc.args);
           turnTrace.push(tc.name + ': ' + r.summary);
+          if (r.changes && r.changes.length) turnChanges.push(...r.changes.map(c => ({ tool: tc.name, ...c })));
           appendChatMessage('tool', tc.name + ': ' + r.summary);
           toolResultsText.push(tc.name + ' 结果: ' + r.summary + '\n' + truncateToolDetail(r.detail));
         }
@@ -1365,6 +1404,8 @@ async function sendChat(prevText) {
         chatMessages.push({ role: 'assistant', content: clean, tokens: lastTokensTotal });
         trimHistory();
         attachResendBtn(msgEl); // 重新生成按钮
+        // 本回合有实际改动 → 渲染「本轮改动」卡片（可跳转/一键撤销）
+        if (turnChanges.length) appendChangesCard(turnChanges);
         // 分层记忆：记一条回合小总结，满阈值则后台整合大总结（不阻塞）
         pushTurnMemory({ user: text, trace: turnTrace, reply: clean });
         maybeRollup();
@@ -1424,6 +1465,69 @@ function appendChatMessage(role, text, idx) {
   applyChatVisibleLimit();
   // 自己发的消息和错误强制滚底；其余贴底才跟随
   if (role === 'user' || role === 'error' || isChatNearBottom()) scrollChatToBottom();
+}
+
+// ===== 本轮改动卡片：回合内条目级改动汇总，可点条目跳转、一键撤销本轮 =====
+let turnUndoBase = 0; // sendChat 开始时撤销栈深度（一键撤销恢复到该点）
+
+function appendChangesCard(changes) {
+  const container = $('chat-messages');
+  if (!container) return;
+  const welcome = container.querySelector('.chat-welcome');
+  if (welcome) welcome.remove();
+  const div = document.createElement('div');
+  div.className = 'chat-msg chat-msg-changes';
+  const head = document.createElement('div');
+  head.className = 'chat-msg-role';
+  head.textContent = '本轮改动 · ' + changes.length + ' 项';
+  const list = document.createElement('div');
+  list.className = 'changes-list';
+  const icons = { add: '＋', delete: '✕', edit: '✎', merge: '⤷', split: '⧉', other: '·' };
+  for (const c of changes) {
+    const label = (icons[c.type] || icons.other) + ' ' + (c.tool || '') + (c.comment ? '「' + c.comment + '」' : '') + (c.detail ? ' — ' + c.detail : '');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'change-item' + (c.type === 'delete' ? ' del' : '');
+    btn.textContent = label;
+    btn.title = c.type === 'delete' ? '该条目已删除' : '打开条目';
+    if (c.uid != null && c.type !== 'delete') {
+      const uid = c.uid;
+      btn.addEventListener('click', () => {
+        selectEntry(uid);
+        document.dispatchEvent(new CustomEvent('wbe:goto-editor'));
+      });
+    } else {
+      btn.disabled = true;
+    }
+    list.appendChild(btn);
+  }
+  const undoBtn = document.createElement('button');
+  undoBtn.type = 'button';
+  undoBtn.className = 'changes-undo';
+  undoBtn.textContent = '⟲ 撤销本轮 ' + changes.length + ' 项';
+  undoBtn.addEventListener('click', () => undoThisTurn(turnUndoBase));
+  div.appendChild(head);
+  div.appendChild(list);
+  div.appendChild(undoBtn);
+  container.appendChild(div);
+  applyChatVisibleLimit();
+  if (isChatNearBottom()) scrollChatToBottom();
+}
+
+// 一键撤销本轮全部改动（恢复到回合开始时的「回合开始」快照）
+function undoThisTurn(base) {
+  if (isSending || base <= 0) return;
+  const labels = restoreUndoTo(base);
+  if (!labels) {
+    import('./utils.js').then(m => m.showToast('本轮没有可撤销的操作', 'info'));
+    return;
+  }
+  renderSidebar();
+  const cur = entries.find(e => e.uid === currentUid) || entries[0];
+  if (cur) selectEntry(cur.uid);
+  else renderEditorEmpty();
+  scheduleSave();
+  import('./utils.js').then(m => m.showToast('已撤销本轮 ' + labels.length + ' 步', 'success'));
 }
 
 // 把连续的工具调用收进一个可展开分组（默认收起）
@@ -1737,6 +1841,19 @@ function buildToolsList() {
         name: 'check_entries',
         description: '全书体检：检查永不触发（无关键词且非常驻）、关键词过短/重复冲突、空正文、标题重复等质量问题。返回问题清单。',
         parameters: { type: 'object', properties: {} }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'find_duplicates',
+        description: '查重：按标题相同/互相包含、关键词重叠(≥2)、正文开头相同找出疑似重复条目对，返回 UID 与相似原因。发现后可用 merge_entries 合并确认的重复项，或 edit_entry 调整。只读不修改。',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: '最多返回的重复组数（默认 10，最大 20）' }
+          }
+        }
       }
     },
     {
@@ -2070,6 +2187,7 @@ async function executeTool(name, args) {
     case 'check_entries': return toolCheckEntries();
     case 'test_triggers': return toolTestTriggers(args || {});
     case 'export_book': return toolExportBook();
+    case 'find_duplicates': return toolFindDuplicates(args || {});
     case 'undo_last': return toolUndo(args);
     case 'get_book_info': return toolBookInfo();
     case 'list_books': return await toolListBooks();
@@ -2186,7 +2304,8 @@ function toolEdit({ uid, fields }) {
   scheduleSave();
   const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
   if (!changed.length) return { summary: '没有可修改的合法字段', detail: '传入字段均不在白名单内或为空：' + ignored.join(', ') };
-  return { summary: '已修改 #' + uid + ' 的 ' + changed.join(','), detail: '修改字段: ' + changed.join(', ') + ignoreNote };
+  const entryTitle = (getAllEntries().find(e => e.uid === uid) || {}).comment || '';
+  return { summary: '已修改 #' + uid + ' 的 ' + changed.join(','), detail: '修改字段: ' + changed.join(', ') + ignoreNote, changes: [{ type: 'edit', uid, comment: entryTitle, detail: changed.join(',') }] };
 }
 
 function applyEntryMeta(entry, semanticType, functionType, extra) {
@@ -2218,7 +2337,7 @@ function toolAdd({ comment, content, key, constant, semanticType, functionType }
   entries.push(entry);
   renderSidebar();
   scheduleSave();
-  return { summary: '已创建 #' + uid, detail: '新条目 UID: ' + uid };
+  return { summary: '已创建 #' + uid, detail: '新条目 UID: ' + uid, changes: [{ type: 'add', uid, comment: comment || '', detail: (content || '').length + ' 字' }] };
 }
 
 function toolAddMany({ entries: items }) {
@@ -2243,7 +2362,14 @@ function toolAddMany({ entries: items }) {
   renderSidebar();
   scheduleSave();
   const uidStr = created.length > 8 ? created.slice(0, 8).join(',') + '…' : created.join(',');
-  return { summary: '已新增 ' + created.length + ' 条 (UID ' + uidStr + ')', detail: '新条目 UID: ' + created.join(', ') };
+  return {
+    summary: '已新增 ' + created.length + ' 条 (UID ' + uidStr + ')',
+    detail: '新条目 UID: ' + created.join(', '),
+    changes: created.slice(0, 12).map(uid => {
+      const e = entries.find(x => x.uid === uid);
+      return { type: 'add', uid, comment: (e && e.comment) || '' };
+    })
+  };
 }
 
 async function toolCreateSmartEntry(args) {
@@ -2329,7 +2455,7 @@ function commitSmartDraft(draft) {
   entries.push(entry);
   renderSidebar();
   scheduleSave();
-  return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid) };
+  return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid), changes: [{ type: 'add', uid, comment: draft.title || '', detail: '智能创建' }] };
 }
 
 function smartDraftDetail(draft, uid) {
@@ -2397,7 +2523,7 @@ function toolDelete({ uid }) {
   }
   renderSidebar();
   scheduleSave();
-  return { summary: '已删除 #' + uid, detail: '已删除 UID ' + uid };
+  return { summary: '已删除 #' + uid, detail: '已删除 UID ' + uid, changes: [{ type: 'delete', uid, comment: title }] };
 }
 
 // 共用条目筛选：constant / disable / uid_range / query
@@ -2443,7 +2569,11 @@ function toolDeleteMany({ uids, filter }) {
   renderSidebar();
   scheduleSave();
   const dStr = delUids.length > 8 ? delUids.slice(0, 8).join(',') + '…' : delUids.join(',');
-  return { summary: '已删除 ' + delUids.length + ' 条 (UID ' + dStr + ')', detail: '已删除 UID: ' + delUids.join(', ') };
+  return {
+    summary: '已删除 ' + delUids.length + ' 条 (UID ' + dStr + ')',
+    detail: '已删除 UID: ' + delUids.join(', '),
+    changes: targets.slice(0, 12).map(e => ({ type: 'delete', uid: e.uid, comment: e.comment || '' }))
+  };
 }
 
 function toolBatchEdit({ filter, fields }) {
@@ -2466,7 +2596,11 @@ function toolBatchEdit({ filter, fields }) {
   }
   scheduleSave();
   const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
-  return { summary: '已批量修改 ' + list.length + ' 条', detail: '修改字段: ' + changed.join(', ') + '，影响 ' + list.length + ' 条' + ignoreNote };
+  return {
+    summary: '已批量修改 ' + list.length + ' 条',
+    detail: '修改字段: ' + changed.join(', ') + '，影响 ' + list.length + ' 条' + ignoreNote,
+    changes: list.slice(0, 12).map(e => ({ type: 'edit', uid: e.uid, comment: e.comment || '', detail: changed.join(',') }))
+  };
 }
 
 function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -2533,7 +2667,8 @@ function toolReplaceText({ find, replace, fields, uid, filter, regex, ignore_cas
   scheduleSave();
   return {
     summary: '已替换 ' + total + ' 处，影响 ' + affected + ' 条',
-    detail: '在 ' + cols.join('/') + ' 把「' + find + '」替换为「' + replace + '」' + (regex ? '（正则）' : '') + '，共 ' + total + ' 处 / ' + affected + ' 个条目'
+    detail: '在 ' + cols.join('/') + ' 把「' + find + '」替换为「' + replace + '」' + (regex ? '（正则）' : '') + '，共 ' + total + ' 处 / ' + affected + ' 个条目',
+    changes: pending.slice(0, 12).map(e => ({ type: 'edit', uid: e.uid, comment: e.comment || '', detail: '替换「' + find + '」' }))
   };
 }
 
@@ -2562,7 +2697,8 @@ function toolManageKeys({ uid, add, remove, secondary }) {
   scheduleSave();
   return {
     summary: '#' + uid + ' ' + label + ' +' + added + ' / -' + removed,
-    detail: '#' + uid + ' 当前' + label + '：' + (arr.length ? arr.join('、') : '(空)')
+    detail: '#' + uid + ' 当前' + label + '：' + (arr.length ? arr.join('、') : '(空)'),
+    changes: [{ type: 'edit', uid, comment: e.comment || '', detail: label + (added ? ' +' + added : '') + (removed ? ' -' + removed : '') }]
   };
 }
 
@@ -2580,7 +2716,7 @@ function toolMoveEntry({ uid, position, depth }) {
   renderSidebar();
   scheduleSave();
   const posName = names[position] || ('position=' + position);
-  return { summary: '#' + uid + ' 移到「' + posName + '」' + extra, detail: '#' + uid + ' position=' + position + '（' + posName + '）' + extra };
+  return { summary: '#' + uid + ' 移到「' + posName + '」' + extra, detail: '#' + uid + ' position=' + position + '（' + posName + '）' + extra, changes: [{ type: 'edit', uid, comment: e.comment || '', detail: 'position=' + position }] };
 }
 
 function toolList({ filter, limit } = {}) {
@@ -2608,7 +2744,7 @@ function toolToggle({ uid, disable }) {
   renderSidebar();
   scheduleSave();
   const state = e.disable ? '已禁用' : '已启用';
-  return { summary: '#' + uid + ' ' + state, detail: '#' + uid + ' (' + (e.comment||'') + ') ' + state };
+  return { summary: '#' + uid + ' ' + state, detail: '#' + uid + ' (' + (e.comment||'') + ') ' + state, changes: [{ type: 'edit', uid, comment: e.comment || '', detail: state }] };
 }
 
 function toolReorder({ uid, order }) {
@@ -2620,7 +2756,7 @@ function toolReorder({ uid, order }) {
   if (currentUid === uid) renderEditor(e);
   renderSidebar();
   scheduleSave();
-  return { summary: '#' + uid + ' order=' + order, detail: '#' + uid + ' (' + (e.comment||'') + ') order 已设为 ' + order };
+  return { summary: '#' + uid + ' order=' + order, detail: '#' + uid + ' (' + (e.comment||'') + ') order 已设为 ' + order, changes: [{ type: 'edit', uid, comment: e.comment || '', detail: 'order=' + order }] };
 }
 
 function toolDuplicate({ uid }) {
@@ -2635,7 +2771,7 @@ function toolDuplicate({ uid }) {
   entries.push(copy);
   renderSidebar();
   scheduleSave();
-  return { summary: '已复制 #' + uid + ' → #' + newUid, detail: '新副本 UID: ' + newUid + '（标题: ' + copy.comment + '）' };
+  return { summary: '已复制 #' + uid + ' → #' + newUid, detail: '新副本 UID: ' + newUid + '（标题: ' + copy.comment + '）', changes: [{ type: 'add', uid: newUid, comment: copy.comment || '', detail: '复制自 #' + uid }] };
 }
 
 // ===== 合并条目 =====
@@ -2668,7 +2804,11 @@ function toolMergeEntries({ uids, keep }) {
   scheduleSave();
   return {
     summary: '已合并 ' + targets.length + ' 条 → #' + keepTarget.uid + '「' + keepTarget.comment + '」',
-    detail: '保留 #' + keepTarget.uid + '，删除 ' + rest.map(t => '#' + t.uid).join('、') + '；关键词合并为: ' + (keepTarget.key.length ? keepTarget.key.join('、') : '(无)') + '。可 undo_last 回退。'
+    detail: '保留 #' + keepTarget.uid + '，删除 ' + rest.map(t => '#' + t.uid).join('、') + '；关键词合并为: ' + (keepTarget.key.length ? keepTarget.key.join('、') : '(无)') + '。可 undo_last 回退。',
+    changes: [
+      { type: 'merge', uid: keepTarget.uid, comment: keepTarget.comment || '', detail: '合并 ' + targets.length + ' 条' },
+      ...rest.slice(0, 11).map(t => ({ type: 'delete', uid: t.uid, comment: t.comment || '' }))
+    ]
   };
 }
 
@@ -2696,7 +2836,53 @@ function toolSplitEntry({ uid, parts }) {
   }
   renderSidebar();
   scheduleSave();
-  return { summary: '已拆分 #' + uid + ' → ' + created.length + ' 条', detail: '新条目 UID: ' + created.join('、') + '（可 undo_last 回退）' };
+  return {
+    summary: '已拆分 #' + uid + ' → ' + created.length + ' 条',
+    detail: '新条目 UID: ' + created.join('、') + '（可 undo_last 回退）',
+    changes: [
+      { type: 'split', uid, comment: src.comment || '', detail: '拆为 ' + created.length + ' 条' },
+      ...created.slice(0, 12).map(uid => ({ type: 'add', uid, comment: (entries.find(x => x.uid === uid) || {}).comment || '' }))
+    ]
+  };
+}
+
+// ===== 查重：按标题相同/子串、关键词重叠、正文开头相同找疑似重复条目 =====
+function toolFindDuplicates({ limit } = {}) {
+  const list = getAllEntries();
+  const norm = s => String(s || '').replace(/[\s，。、,.!！?？:：;；"'“”‘’()[\]【】\-—_]/g, '').toLowerCase();
+  const pairs = [];
+  const seen = new Set();
+  const cap = limit && limit > 0 ? Math.min(limit, 20) : 10;
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i], b = list[j];
+      const key = a.uid < b.uid ? a.uid + '-' + b.uid : b.uid + '-' + a.uid;
+      if (seen.has(key)) continue;
+      const na = norm(a.comment), nb = norm(b.comment);
+      let reason = '', score = 0;
+      if (na && na === nb) { reason = '标题完全相同'; score = 1; }
+      else if (na && nb && (na.includes(nb) || nb.includes(na))) { reason = '标题互为包含'; score = 0.8; }
+      if (score < 1) {
+        const ka = new Set((a.key || []).map(norm).filter(Boolean));
+        const overlap = (b.key || []).map(norm).filter(k => k && ka.has(k)).length;
+        if (overlap >= 2) { reason = '关键词重叠 ' + overlap + ' 个'; score = Math.max(score, 0.7); }
+        const ca = norm(a.content).slice(0, 80), cb = norm(b.content).slice(0, 80);
+        if (ca && ca === cb) { reason = '正文开头相同'; score = Math.max(score, 0.8); }
+      }
+      if (score > 0) {
+        seen.add(key);
+        pairs.push({ uidA: a.uid, uidB: b.uid, commentA: a.comment || '(无题)', commentB: b.comment || '(无题)', reason, score });
+      }
+    }
+  }
+  pairs.sort((x, y) => y.score - x.score);
+  const shown = pairs.slice(0, cap);
+  return {
+    summary: '发现 ' + pairs.length + ' 组疑似重复',
+    detail: (shown.length
+      ? shown.map(p => '#' + p.uidA + '「' + p.commentA + '」 ↔ #' + p.uidB + '「' + p.commentB + '」 — ' + p.reason).join('\n')
+      : '未发现重复。可配合 merge_entries 合并确认重复的条目。') + (pairs.length > shown.length ? '\n…还有 ' + (pairs.length - shown.length) + ' 组未列出' : '')
+  };
 }
 
 // ===== 全书体检 =====

@@ -778,3 +778,51 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
 .cloud-status.err { color: var(--danger); }
 
 /* ===== 上下文 token 估算显示 ===== */
+
+/* ===== 本轮改动卡片 ===== */
+.chat-msg-changes { border: 1px solid var(--line); border-left: 2px solid var(--wine); padding: 10px 12px; background: color-mix(in srgb, var(--paper-3) 70%, transparent); }
+.changes-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.change-item {
+  text-align: left; border: 0; background: transparent; color: var(--ink);
+  font-size: 11px; padding: 3px 2px; cursor: pointer; border-radius: 4px;
+}
+.change-item:hover, .change-item:focus-visible { background: color-mix(in srgb, var(--wine) 10%, transparent); }
+.change-item.del { color: var(--danger); opacity: .75; cursor: default; }
+.change-item.del:hover { background: transparent; }
+.change-item:disabled { cursor: default; }
+.changes-undo {
+  margin-top: 8px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--faint); font-size: 8px; font-weight: 750; letter-spacing: .08em;
+  text-transform: uppercase; cursor: pointer; transition: .15s ease;
+}
+.changes-undo:hover, .changes-undo:focus-visible { color: var(--wine); border-color: var(--wine); }
+
+/* ===== 撤销历史弹窗 ===== */
+.undo-list { margin-top: 14px; display: flex; flex-direction: column; }
+.undo-empty { color: var(--muted); font-size: 11px; line-height: 1.7; padding: 10px 0; }
+.undo-row {
+  display: grid; grid-template-columns: 30px minmax(0,1fr) auto; gap: 10px; align-items: center;
+  width: 100%; text-align: left; padding: 11px 0; border: 0; border-bottom: 1px solid var(--line);
+  background: transparent; color: var(--ink); cursor: pointer;
+}
+.undo-row:hover, .undo-row:focus-visible { background: color-mix(in srgb, var(--wine) 7%, transparent); }
+.undo-row .undo-no { color: var(--wine); font-family: Georgia, "Times New Roman", serif; font-size: 15px; }
+.undo-row .undo-label { font-size: 12px; }
+.undo-row .undo-ts { color: var(--muted); font-size: 9px; }
+
+/* ===== 卡片类型角标 ===== */
+.type-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 6px;
+  border: 1px solid var(--wine); border-radius: 999px;
+  color: var(--wine); font-size: 7px; font-weight: 750; letter-spacing: .08em;
+  vertical-align: 1px;
+}
+.type-badge-sm { margin-left: 4px; font-size: 7px; padding: 0 5px; }
+
+/* ===== 记忆弹窗搜索 ===== */
+.mem-search {
+  width: 100%; margin-top: 12px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--paper-3); color: var(--ink); font-size: 11px; outline: 0;
+}
+.mem-search:focus { border-color: var(--wine); }
