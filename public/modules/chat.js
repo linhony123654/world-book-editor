@@ -1,5 +1,5 @@
 // ===== AI 聊天 =====
-import { escHtml, escAttr, escUrl, $ } from './utils.js';
+import { escHtml, escAttr, escUrl, $, estimateTokens } from './utils.js';
 import { TOOL_NAMES, TOOL_NAME_PATTERN } from './tool-names.js';
 import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo } from './state.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
@@ -525,8 +525,9 @@ async function maybeRollup() {
 
 // 注入 system：所有大总结全文 + 最近未压缩的小总结（总长上限 8000 字符，防止上下文膨胀）
 const MEMORY_INJECTION_MAX = 8000;
+const MEMORY_INJECTION_TIGHT = 2500; // 超预算时压缩记忆注入的上限
 
-function buildMemoryInjection() {
+function buildMemoryInjection(maxChars = MEMORY_INJECTION_MAX) {
   const parts = [];
   if (memory.rollups.length) {
     parts.push('【长期记忆 · 阶段总结】\n' + memory.rollups.map(r => '· ' + r.text).join('\n'));
@@ -553,7 +554,7 @@ function buildMemoryInjection() {
   }
   const joined = parts.join('\n\n');
   if (!joined) return '';
-  return '\n\n' + (joined.length <= MEMORY_INJECTION_MAX ? joined : joined.slice(0, MEMORY_INJECTION_MAX) + '\n…(记忆注入已截断)');
+  return '\n\n' + (joined.length <= maxChars ? joined : joined.slice(0, maxChars) + '\n…(记忆注入已截断)');
 }
 
 // 确保当前 memory 与 currentBookId 对应（换书/刷新后用）。currentBookId 是 live binding。
@@ -1127,7 +1128,46 @@ function setSendBusy(busy) {
 // ===== sendChat =====
 const MAX_ROUNDS = 12;              // 工具调用轮数上限（原 25，平方级膨胀，降到 12 控制上下文）
 const STREAM_TIMEOUT_MS = 120000;   // 主对话流式请求超时（超时自动 abort 并复位 UI）
-const TOOL_DETAIL_MAX = 1500;       // 工具结果 detail 注入上下文的最大长度（超出截断+省略号）
+const TOOL_DETAIL_MAX = 800;        // 工具结果 detail 注入上下文的最大长度（搜索类结果足够，控制上下文膨胀）
+const TOKEN_BUDGET = 16000;         // 每轮请求上下文 token 预算（超预算两档降级）
+
+// 估算整组消息的 token 总数（含 tool_calls 的 JSON 序列化）
+function countMessagesTokens(messages) {
+  return (messages || []).reduce((s, m) =>
+    s + estimateTokens(m && m.content) + estimateTokens(m && m.tool_calls ? JSON.stringify(m.tool_calls) : ''), 0);
+}
+
+// 折叠最旧消息直到估算 ≤ 预算。安全规则：
+// 带 tool_calls 的 assistant 消息与其后续 tool 结果成对移除，避免破坏 function calling 协议。
+function trimToBudget(messages, budget) {
+  const system = messages[0];
+  const rest = messages.slice(1);
+  let total = countMessagesTokens(messages);
+  let folded = 0;
+  while (rest.length > 1 && total > budget) {
+    const removed = rest.shift();
+    if (removed && removed.role === 'assistant' && removed.tool_calls) {
+      while (rest.length && rest[0].role === 'tool') rest.shift();
+    }
+    folded++;
+    total = countMessagesTokens([system, ...rest]);
+  }
+  if (folded > 0) rest.unshift({ role: 'user', content: '（为控制上下文长度，较早的对话已折叠，无需回溯，继续当前任务即可）' });
+  return [system, ...rest];
+}
+
+// 界面显示当前轮上下文估算（输入栏上方小字）
+function updateTokenMeta(messages, budgetLevel) {
+  const el = $('chatTokenMeta');
+  if (!el) return;
+  const total = countMessagesTokens(messages);
+  el.hidden = false;
+  let label = '上下文 ≈ ' + total.toLocaleString() + ' tok / 预算 ' + TOKEN_BUDGET.toLocaleString();
+  if (budgetLevel === 1) label += ' · 记忆注入已压缩';
+  else if (budgetLevel === 2) label += ' · 较早对话已折叠';
+  el.textContent = label;
+  el.classList.toggle('over', total > TOKEN_BUDGET);
+}
 
 function genToolCallId() {
   return 'call_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -1188,12 +1228,28 @@ async function sendChat(prevText) {
   }
 
   const curBookName = ($('file-name') && $('file-name').textContent) || '未命名';
-  let systemMsg = systemPrompt + '\n\n当前世界书:「' + curBookName + '」，共 ' + entries.length + ' 个条目。如需多步操作（如先搜索再修改），可以连续调用工具，系统会把每步结果返回给你。你也可以用 list_books / switch_book / create_book / rename_book / get_book_info 管理整本世界书。';
-  systemMsg += buildMemoryInjection();
-  const messages = [
+  const bookCtx = '\n\n当前世界书:「' + curBookName + '」，共 ' + entries.length + ' 个条目。如需多步操作（如先搜索再修改），可以连续调用工具，系统会把每步结果返回给你。你也可以用 list_books / switch_book / create_book / rename_book / get_book_info 管理整本世界书。';
+  let systemMsg = systemPrompt + bookCtx + buildMemoryInjection();
+  let messages = [
     { role: 'system', content: systemMsg },
     ...chatMessages
   ];
+  // 上下文 token 预算：超预算时两档降级（压缩记忆注入 → 折叠最旧历史），控制成本与延迟
+  let budgetLevel = 0; // 0 正常 / 1 压缩注入 / 2 折叠历史
+  if (countMessagesTokens(messages) > TOKEN_BUDGET) {
+    systemMsg = systemPrompt + bookCtx + buildMemoryInjection(MEMORY_INJECTION_TIGHT);
+    messages = [
+      { role: 'system', content: systemMsg },
+      ...chatMessages
+    ];
+    if (countMessagesTokens(messages) > TOKEN_BUDGET) {
+      messages = trimToBudget(messages, TOKEN_BUDGET);
+      budgetLevel = 2;
+    } else {
+      budgetLevel = 1;
+    }
+  }
+  updateTokenMeta(messages, budgetLevel);
 
   // 流开始时的会话/世界书快照：提交结果前校验，防止写进切换后的会话/书本
   const sessionIdAtStart = activeSessionId;

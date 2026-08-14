@@ -82,6 +82,16 @@ export function showToast(msg, type, opts) {
   }
 }
 
+// 粗略 token 估算（CL100K 近似）：CJK 约 0.8 token/字，其余约 0.3 token/字符。
+// 用于上下文预算管理与成本可见性，不需要精确。
+export function estimateTokens(text) {
+  if (text == null) return 0;
+  const s = String(text);
+  if (!s) return 0;
+  const cjk = (s.match(/[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af\uff00-\uffef\u3000-\u303f]/g) || []).length;
+  return Math.ceil(cjk * 0.8 + (s.length - cjk) * 0.3);
+}
+
 // ===== Modal 弹窗：焦点管理（Esc 关闭 / Tab 循环 / 焦点归还 / 背景滚动锁） =====
 // 弹窗只要带 .modal.open 即生效（不依赖调用方是否走 openModal）；
 // openModal 额外记录触发元素，关闭时把焦点归还给触发者。
@@ -135,7 +145,8 @@ function _ensureModalHandlers() {
   document.addEventListener('keydown', _onModalKeydown);
 }
 // 模块加载即挂载：保证任何方式打开的 .modal.open（含 chat.js 直接 classList 操作）都有 Esc/Tab 处理
-_ensureModalHandlers();
+// typeof document 守卫：node --test 直接 import 本模块时跳过 DOM 挂载
+if (typeof document !== 'undefined') _ensureModalHandlers();
 
 export function openModal(el, opts) {
   if (!el) return null;

@@ -538,7 +538,7 @@ function bindApiModal() {
       // 经本地后端代理转发，避免第三方网关缺 CORS 头被浏览器拦截
       const resp = await fetch('/api/proxy/models', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ url, key })
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);

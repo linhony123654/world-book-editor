@@ -761,3 +761,7 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
 .cloud-status { display: block; margin-top: 10px; color: var(--muted); font-size: 9px; letter-spacing: .06em; }
 .cloud-status.ok { color: var(--forest); }
 .cloud-status.err { color: var(--danger); }
+
+/* ===== 上下文 token 估算显示 ===== */
+.chat-token-meta { padding: 4px 20px 0; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.chat-token-meta.over { color: var(--danger); }
