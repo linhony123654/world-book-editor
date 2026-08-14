@@ -10,7 +10,7 @@ import { chooseInitialBookId } from './modules/book-session.js';
 import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
 import { checkAuth, bindAuth, showLoginScreen, authHeaders } from './modules/auth.js';
 
-const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings'];
+const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings', 'me'];
 
 // ===== 多 API 配置档案 =====
 // 存储：wbe-api-profiles = [{id,name,url,key,model,prompt}]，wbe-api-active = id
@@ -70,7 +70,24 @@ function setScreen(name) {
   else window.scrollTo(0, 0);
   if (name === 'archives') renderArchives();
   if (name === 'settings') refreshSettings();
+  if (name === 'me') fillProfile();
   if (name === 'editor') autoSizeTitle(); // 隐藏时渲染过标题，切回来重算高度
+}
+
+// ===== 我的页：填充账号信息（用户名 + 头像首字） =====
+async function fillProfile() {
+  const nameEl = $('meUsername');
+  const avatarEl = $('meAvatar');
+  if (!nameEl) return;
+  try {
+    const data = await cloudApi('/api/me', 'GET');
+    if (data.username) {
+      nameEl.textContent = data.username;
+      if (avatarEl) avatarEl.textContent = String(data.username).slice(0, 1).toUpperCase();
+    }
+  } catch (e) {
+    nameEl.textContent = '—';
+  }
 }
 
 // ===== 选中条目回调（渲染编辑器，不强制切屏） =====

@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="style.css?v=mag7" />
+  <link rel="stylesheet" href="style.css?v=mag8" />
 </head>
 <body>
   <main class="app">
@@ -297,18 +297,6 @@
         </div>
 
         <div class="settings-group">
-          <div class="setting setting-stack">
-            <div style="min-width:0">
-              <strong>账号与安全</strong>
-              <small>修改登录密码（所有设备需重新登录）/ 退出当前账号</small>
-            </div>
-            <input class="config-key-input" id="oldPasswordInput" type="password" placeholder="旧密码" autocomplete="current-password" aria-label="旧密码" />
-            <input class="config-key-input" id="newPasswordInput" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" aria-label="新密码" />
-            <div class="config-key-actions">
-              <button class="action" id="changePasswordBtn">修改密码</button>
-              <button class="action danger" id="logoutBtn">退出登录</button>
-            </div>
-          </div>
           <div class="setting" id="apiConfigRow">
             <div style="min-width:0;flex:1">
               <strong>AI 接口</strong>
@@ -383,6 +371,70 @@
       </div>
     </section>
 
+    <!-- ===== Me ===== -->
+    <section class="screen" id="screen-me">
+      <header class="masthead-bar">
+        <button class="icon-btn" data-nav="library" aria-label="返回">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <div class="brand-mini">
+          <strong>PROFILE</strong>
+          <span>私人账号与工具</span>
+        </div>
+        <span></span>
+      </header>
+
+      <div class="me-page">
+        <div class="me-profile">
+          <div class="me-avatar" id="meAvatar">?</div>
+          <div class="me-copy">
+            <h2 id="meUsername">—</h2>
+            <small>World Book Editor · 本地私有账号</small>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="setting setting-stack">
+            <div style="min-width:0">
+              <strong>修改密码</strong>
+              <small>修改后所有设备需重新登录</small>
+            </div>
+            <input class="config-key-input" id="oldPasswordInput" type="password" placeholder="旧密码" autocomplete="current-password" aria-label="旧密码" />
+            <input class="config-key-input" id="newPasswordInput" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" aria-label="新密码" />
+            <div class="config-key-actions">
+              <button class="action primary" id="changePasswordBtn">修改密码</button>
+            </div>
+          </div>
+          <div class="setting">
+            <div><strong>退出登录</strong><small>退出当前账号，数据保留在服务器</small></div>
+            <button class="action danger" id="logoutBtn">退出</button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="setting setting-stack">
+            <div style="min-width:0">
+              <strong>快捷键一览</strong>
+              <small>常用操作不用摸鼠标</small>
+            </div>
+            <div class="shortcut-list">
+              <div class="shortcut-row"><kbd>Ctrl/⌘</kbd><kbd>S</kbd><span>手动保存</span></div>
+              <div class="shortcut-row"><kbd>Ctrl/⌘</kbd><kbd>Z</kbd><span>撤销（输入框内为文本撤销）</span></div>
+              <div class="shortcut-row"><kbd>Enter</kbd><span>聊天发送（Shift+Enter 换行）</span></div>
+              <div class="shortcut-row"><kbd>Esc</kbd><span>关闭弹窗</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="setting">
+            <div><strong>关于</strong><small id="aboutLabel">World Book Editor · 世界书编辑台</small></div>
+            <button class="action" id="aboutBtn" style="width:82px;">v1.0.0</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== bottom nav ===== -->
     <nav class="bottom-nav">
       <button class="nav active" data-nav="library">
@@ -396,6 +448,10 @@
       <button class="nav" data-nav="archives">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v4H4zM5 8h14v12H5z"/><path d="M9 12h6"/></svg>
         <span>Issues</span>
+      </button>
+      <button class="nav" data-nav="me">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+        <span>我的</span>
       </button>
     </nav>
   </main>
@@ -557,7 +613,7 @@
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 
-  <script type="module" src="app.js?v=mag7"></script>
+  <script type="module" src="app.js?v=mag8"></script>
   <script>
     // PWA: Service Worker 注册（仅 HTTPS/localhost 安全上下文生效）
     if ('serviceWorker' in navigator) {

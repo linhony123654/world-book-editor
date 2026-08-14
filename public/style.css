@@ -237,7 +237,7 @@ svg { display: block; }
 .bottom-nav {
   position: fixed; left: 50%; bottom: 0; transform: translateX(-50%);
   width: min(100%, 430px); min-height: calc(66px + var(--safe-bottom));
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   padding: 7px 6px var(--safe-bottom); border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--paper) 94%, transparent); backdrop-filter: blur(16px); z-index: 11;
 }
@@ -826,3 +826,27 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
   background: var(--paper-3); color: var(--ink); font-size: 11px; outline: 0;
 }
 .mem-search:focus { border-color: var(--wine); }
+
+/* ===== 我的页（个人中心） ===== */
+.me-page { padding: 20px 20px 30px; }
+.me-profile { display: flex; align-items: center; gap: 16px; padding: 8px 0 26px; border-bottom: 1px solid var(--line); }
+.me-avatar {
+  width: 62px; height: 62px; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border-radius: 50%; border: 1px solid var(--ink);
+  background: var(--ink); color: var(--paper);
+  font-family: Georgia, "Times New Roman", serif; font-size: 26px;
+}
+.me-copy h2 { margin: 0; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 22px; letter-spacing: -.01em; }
+.me-copy small { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; letter-spacing: .04em; }
+
+/* 快捷键一览 */
+.shortcut-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.shortcut-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink); }
+.shortcut-row span { color: var(--muted); font-size: 10px; }
+.shortcut-row kbd {
+  min-width: 22px; text-align: center; padding: 2px 6px;
+  border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+  background: var(--paper-3); color: var(--ink);
+  font-family: ui-monospace, Menlo, monospace; font-size: 10px;
+}
