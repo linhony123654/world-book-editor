@@ -1,5 +1,5 @@
 // ===== 登录 / 首次设置 / 修改密码 =====
-import { $, showToast } from './utils.js';
+import { $, showToast, openModal, closeModal, showConfirm } from './utils.js';
 
 const TOKEN_KEY = 'wbe-token';
 
@@ -170,30 +170,45 @@ export function bindAuth() {
     }
   });
 
-  // 修改密码
-  const changeBtn = $('changePasswordBtn');
-  if (changeBtn) changeBtn.addEventListener('click', async () => {
+  // 修改密码（我的页入口 → 弹窗表单）
+  const pwdBtn = $('mePwdBtn');
+  if (pwdBtn) pwdBtn.addEventListener('click', () => {
+    const oldInput = $('oldPasswordInput');
+    const newInput = $('newPasswordInput');
+    if (oldInput) oldInput.value = '';
+    if (newInput) newInput.value = '';
+    openModal($('pwdModal'), { focus: oldInput });
+  });
+  const pwdConfirmBtn = $('pwdConfirmBtn');
+  if (pwdConfirmBtn) pwdConfirmBtn.addEventListener('click', async () => {
     const oldP = ($('oldPasswordInput') || {}).value || '';
     const newP = ($('newPasswordInput') || {}).value || '';
     if (!oldP) return showToast('请输入旧密码', 'error');
     if (!newP || newP.length < 6) return showToast('新密码至少 6 位', 'error');
-    changeBtn.disabled = true;
+    pwdConfirmBtn.disabled = true;
     try {
       const r = await doChangePassword(oldP, newP);
+      closeModal($('pwdModal'));
       showToast(r.message || '密码已修改', 'success');
-      $('oldPasswordInput').value = '';
-      $('newPasswordInput').value = '';
       // 所有会话失效，回登录
       setToken('');
       showLoginScreen('login');
     } catch (e) {
       showToast(e.message, 'error');
     } finally {
-      changeBtn.disabled = false;
+      pwdConfirmBtn.disabled = false;
     }
   });
+  // 退出登录（带确认弹窗）
   const logoutBtn = $('logoutBtn');
   if (logoutBtn) logoutBtn.addEventListener('click', async () => {
+    const ok = await showConfirm({
+      title: '退出登录',
+      message: '确定退出当前账号？世界书数据保留在服务器，不会丢失。',
+      okText: '退出',
+      danger: true
+    });
+    if (!ok) return;
     await doLogout();
     showToast('已退出登录', 'success');
   });

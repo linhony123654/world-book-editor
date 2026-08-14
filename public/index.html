@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="style.css?v=mag8" />
+  <link rel="stylesheet" href="style.css?v=mag9" />
 </head>
 <body>
   <main class="app">
@@ -393,44 +393,27 @@
           </div>
         </div>
 
-        <div class="settings-group">
-          <div class="setting setting-stack">
-            <div style="min-width:0">
-              <strong>修改密码</strong>
-              <small>修改后所有设备需重新登录</small>
-            </div>
-            <input class="config-key-input" id="oldPasswordInput" type="password" placeholder="旧密码" autocomplete="current-password" aria-label="旧密码" />
-            <input class="config-key-input" id="newPasswordInput" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" aria-label="新密码" />
-            <div class="config-key-actions">
-              <button class="action primary" id="changePasswordBtn">修改密码</button>
-            </div>
-          </div>
-          <div class="setting">
-            <div><strong>退出登录</strong><small>退出当前账号，数据保留在服务器</small></div>
-            <button class="action danger" id="logoutBtn">退出</button>
-          </div>
-        </div>
-
-        <div class="settings-group">
-          <div class="setting setting-stack">
-            <div style="min-width:0">
-              <strong>快捷键一览</strong>
-              <small>常用操作不用摸鼠标</small>
-            </div>
-            <div class="shortcut-list">
-              <div class="shortcut-row"><kbd>Ctrl/⌘</kbd><kbd>S</kbd><span>手动保存</span></div>
-              <div class="shortcut-row"><kbd>Ctrl/⌘</kbd><kbd>Z</kbd><span>撤销（输入框内为文本撤销）</span></div>
-              <div class="shortcut-row"><kbd>Enter</kbd><span>聊天发送（Shift+Enter 换行）</span></div>
-              <div class="shortcut-row"><kbd>Esc</kbd><span>关闭弹窗</span></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="settings-group">
-          <div class="setting">
-            <div><strong>关于</strong><small id="aboutLabel">World Book Editor · 世界书编辑台</small></div>
-            <button class="action" id="aboutBtn" style="width:82px;">v1.0.0</button>
-          </div>
+        <div class="me-list">
+          <button type="button" class="me-row" id="mePwdBtn">
+            <span>修改密码</span>
+            <small>修改后所有设备需重新登录</small>
+            <i aria-hidden="true">›</i>
+          </button>
+          <button type="button" class="me-row" id="meShortcutBtn">
+            <span>快捷键一览</span>
+            <small>常用操作不用摸鼠标</small>
+            <i aria-hidden="true">›</i>
+          </button>
+          <button type="button" class="me-row" id="meAboutBtn">
+            <span>关于</span>
+            <small>World Book Editor · v1.0.0</small>
+            <i aria-hidden="true">›</i>
+          </button>
+          <button type="button" class="me-row danger" id="logoutBtn">
+            <span>退出登录</span>
+            <small>退出当前账号，数据保留在服务器</small>
+            <i aria-hidden="true">›</i>
+          </button>
         </div>
       </div>
     </section>
@@ -609,11 +592,60 @@
     </div>
   </div>
 
+  <!-- 修改密码 -->
+  <div class="modal" id="pwdModal" role="dialog" aria-modal="true" aria-labelledby="pwdModalTitle">
+    <div class="sheet">
+      <div class="mini">Security</div>
+      <h3 id="pwdModalTitle">修改密码</h3>
+      <div class="field">
+        <label>旧密码</label>
+        <input id="oldPasswordInput" type="password" placeholder="当前登录密码" autocomplete="current-password" aria-label="旧密码" />
+      </div>
+      <div class="field">
+        <label>新密码</label>
+        <input id="newPasswordInput" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" aria-label="新密码" />
+      </div>
+      <div class="sheet-actions">
+        <button class="action" data-close-modal="pwdModal">取消</button>
+        <button class="action primary" id="pwdConfirmBtn">确认修改</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 快捷键一览 -->
+  <div class="modal" id="shortcutModal" role="dialog" aria-modal="true" aria-labelledby="shortcutModalTitle">
+    <div class="sheet">
+      <div class="mini">Shortcuts</div>
+      <h3 id="shortcutModalTitle">快捷键一览</h3>
+      <div class="shortcut-list">
+        <div class="shortcut-row"><kbd>Ctrl/⌘</kbd><kbd>S</kbd><span>手动保存</span></div>
+        <div class="shortcut-row"><kbd>Ctrl/⌘</kbd><kbd>Z</kbd><span>撤销（输入框内为文本撤销）</span></div>
+        <div class="shortcut-row"><kbd>Enter</kbd><span>聊天发送（Shift+Enter 换行）</span></div>
+        <div class="shortcut-row"><kbd>Esc</kbd><span>关闭弹窗</span></div>
+      </div>
+      <div class="sheet-actions">
+        <button class="action primary" data-close-modal="shortcutModal">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 关于 -->
+  <div class="modal" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
+    <div class="sheet">
+      <div class="mini">About</div>
+      <h3 id="aboutModalTitle">World Book Editor</h3>
+      <p class="memory-note">基于 Web 的 SillyTavern 世界书（World Info / Lorebook）可视化编辑器。多世界书管理、AI 流式对话修改、智能写作、外置存储同步（WebDAV / S3）、会话级记忆。</p>
+      <div class="sheet-actions">
+        <button class="action primary" data-close-modal="aboutModal">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"><span id="toastText">Saved</span><button type="button" id="toastAction" hidden></button></div>
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 
-  <script type="module" src="app.js?v=mag8"></script>
+  <script type="module" src="app.js?v=mag9"></script>
   <script>
     // PWA: Service Worker 注册（仅 HTTPS/localhost 安全上下文生效）
     if ('serviceWorker' in navigator) {

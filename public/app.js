@@ -117,6 +117,7 @@ async function bootApp() {
   bindModalClose();
   bindUndo();
   bindCloud();
+  bindMe();
 
   initSidebar(onSelectEntry, setScreen);
   initChat();
@@ -758,6 +759,12 @@ function bindCloud() {
       showToast('拉取失败: ' + e.message, 'error');
     }
   });
+}
+
+// ===== 我的页：快捷键 / 关于 弹窗 =====
+function bindMe() {
+  $('meShortcutBtn') && $('meShortcutBtn').addEventListener('click', () => openModal($('shortcutModal')));
+  $('meAboutBtn') && $('meAboutBtn').addEventListener('click', () => openModal($('aboutModal')));
 }
 
 // ===== 启动 =====

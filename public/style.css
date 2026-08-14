@@ -850,3 +850,17 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
   background: var(--paper-3); color: var(--ink);
   font-family: ui-monospace, Menlo, monospace; font-size: 10px;
 }
+
+/* ===== 我的页列表导航（点击弹窗式） ===== */
+.me-list { margin-top: 18px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.me-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  gap: 0 10px; width: 100%; text-align: left;
+  padding: 15px 2px; border: 0; border-bottom: 1px solid var(--line);
+  background: transparent; color: var(--ink); cursor: pointer;
+}
+.me-row:hover, .me-row:focus-visible { background: color-mix(in srgb, var(--wine) 6%, transparent); }
+.me-row span { font-size: 13px; }
+.me-row small { grid-column: 1; color: var(--muted); font-size: 10px; margin-top: 3px; }
+.me-row i { grid-row: 1 / span 2; grid-column: 2; color: var(--faint); font-style: normal; font-size: 18px; }
+.me-row.danger span { color: var(--danger); }
