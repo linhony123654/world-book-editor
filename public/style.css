@@ -400,17 +400,6 @@ svg { display: block; }
 .chat-msg { display: flex; flex-direction: column; gap: 5px; }
 .chat-msg-role { font-size: 8px; font-weight: 750; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
 
-/* 重新生成按钮 */
-.chat-resend {
-  display: inline-flex; align-items: center; gap: 4px;
-  margin-top: 8px; padding: 3px 9px;
-  border: 1px solid var(--line); border-radius: 999px;
-  background: transparent; color: var(--faint); cursor: pointer;
-  font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
-  opacity: .7; transition: .15s ease;
-}
-.chat-resend:hover, .chat-resend:focus-visible { opacity: 1; color: var(--wine); border-color: var(--wine); }
-.chat-resend .icon { width: 10px; height: 10px; }
 .chat-msg-text { font-size: 13px; line-height: 1.65; color: var(--ink); word-break: break-word; }
 .chat-msg-user { align-items: flex-end; }
 .chat-msg-user .chat-msg-text { background: var(--ink); color: var(--paper); padding: 10px 14px; border-radius: 14px 14px 4px 14px; max-width: 84%; }
@@ -739,11 +728,28 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
 
 /* ===== 会话消息编辑/删除按钮 ===== */
 .chat-msg { position: relative; }
-.chat-msg-actions { display: flex; gap: 8px; margin-top: 2px; opacity: 0; transition: opacity .15s ease; }
-.chat-msg:hover .chat-msg-actions, .chat-msg:focus-within .chat-msg-actions { opacity: 1; }
-@media (pointer: coarse) { .chat-msg-actions { opacity: 1; } }
-.chat-msg-act { border: 0; background: transparent; color: var(--muted); font-size: 10px; padding: 2px 4px; cursor: pointer; }
-.chat-msg-act:hover, .chat-msg-act:focus-visible { color: var(--wine); }
+/* 消息操作行：标签按钮常显（重新生成 / 编辑 / 删除）+ token 彩色胶囊 */
+.chat-msg-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.chat-msg-user .chat-msg-actions { justify-content: flex-end; }
+.chat-msg-act {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--faint); cursor: pointer;
+  font-size: 8px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  opacity: .75; transition: .15s ease;
+}
+.chat-msg-act:hover, .chat-msg-act:focus-visible { opacity: 1; color: var(--wine); border-color: var(--wine); }
+.chat-msg-act .icon { width: 10px; height: 10px; }
+.chat-token-pill {
+  display: inline-flex; align-items: center;
+  padding: 3px 9px;
+  border: 1px solid var(--wine); border-radius: 999px;
+  background: transparent; color: var(--wine);
+  font-size: 8px; font-weight: 750; letter-spacing: .08em;
+  opacity: .85;
+}
+.chat-token-pill.over { background: var(--danger); border-color: var(--danger); color: var(--paper); opacity: 1; }
 .chat-msg-editing .chat-msg-edit-textarea { width: 100%; min-height: 60px; border: 1px solid var(--line); background: var(--paper-3); color: var(--ink); padding: 8px 10px; font-size: 13px; outline: 0; resize: vertical; font-family: inherit; }
 .chat-msg-edit-actions { display: flex; gap: 8px; margin-top: 6px; }
 .chat-msg-edit-actions .action { font-size: 9px; padding: 6px 10px; }
@@ -763,5 +769,3 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
 .cloud-status.err { color: var(--danger); }
 
 /* ===== 上下文 token 估算显示 ===== */
-.chat-token-meta { padding: 4px 20px 0; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
-.chat-token-meta.over { color: var(--danger); }

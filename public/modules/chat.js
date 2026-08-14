@@ -760,38 +760,65 @@ export function initChat() {
   if ($draftModal) $draftModal.addEventListener('modal:closed', discardActiveSmartDraft);
 }
 
-// ===== 重新生成：删除最后一条 AI 回复，用同一条用户消息重发 =====
-function attachResendBtn(msgEl, idx) {
-  if (!msgEl || msgEl.querySelector('.chat-resend')) return;
-  const btn = document.createElement('button');
-  btn.className = 'chat-resend';
-  btn.title = '重新生成';
-  btn.setAttribute('aria-label', '重新生成');
-  btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a9 9 0 0 1 15-6.7L21 8"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a9 9 0 0 1-15 6.7L3 16"/></svg><span>重新生成</span>';
-  btn.addEventListener('click', resendLast);
-  msgEl.appendChild(btn);
-  attachMsgActions(msgEl, idx);
+// ===== 消息操作行：重新生成(仅 assistant) / 编辑 / 删除 + token 标签 =====
+// msgEl 可能是 .chat-msg-text（流式气泡）或外层 .chat-msg：按钮行统一挂外层气泡
+// idx 缺省时取最后一条消息（流式完成场景，修复此前 undefined 索引导致点击无效）
+function attachMsgRow(msgEl, idx) {
+  const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
+  if (!host || host.querySelector('.chat-msg-actions')) return;
+  const i = idx != null ? Number(idx) : chatMessages.length - 1;
+  const m = chatMessages[i];
+  if (!m || (m.role !== 'user' && m.role !== 'assistant')) return;
+  const row = document.createElement('div');
+  row.className = 'chat-msg-actions';
+  if (m.role === 'assistant') {
+    const resend = document.createElement('button');
+    resend.type = 'button';
+    resend.className = 'chat-msg-act';
+    resend.title = '重新生成';
+    resend.setAttribute('aria-label', '重新生成');
+    resend.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a9 9 0 0 1 15-6.7L21 8"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a9 9 0 0 1-15 6.7L3 16"/></svg><span>重新生成</span>';
+    resend.addEventListener('click', resendLast);
+    row.appendChild(resend);
+  }
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'chat-msg-act';
+  edit.title = '编辑这条消息';
+  edit.setAttribute('aria-label', '编辑这条消息');
+  edit.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>编辑</span>';
+  edit.addEventListener('click', () => startEditMsg(msgEl, i));
+  row.appendChild(edit);
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'chat-msg-act';
+  del.title = '删除这条消息';
+  del.setAttribute('aria-label', '删除这条消息');
+  del.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg><span>删除</span>';
+  del.addEventListener('click', () => deleteMsg(i, msgEl));
+  row.appendChild(del);
+  // token 标签：assistant 消息带该轮上下文估算（彩色胶囊，持久化在消息对象上）
+  if (m.role === 'assistant' && m.tokens) {
+    const pill = document.createElement('span');
+    pill.className = 'chat-token-pill' + (m.tokens > TOKEN_BUDGET ? ' over' : '');
+    pill.textContent = '≈ ' + m.tokens.toLocaleString() + ' tok';
+    pill.title = '该轮发送给模型的上下文估算';
+    row.appendChild(pill);
+  }
+  host.appendChild(row);
 }
 
-// ===== 消息编辑/删除（user 与 assistant 消息） =====
-function attachMsgActions(msgEl, idx) {
-  if (!msgEl || msgEl.querySelector('.chat-msg-actions')) return;
-  const acts = document.createElement('div');
-  acts.className = 'chat-msg-actions';
-  acts.innerHTML =
-    '<button type="button" class="chat-msg-act" data-act="edit" aria-label="编辑这条消息">✎ 编辑</button>' +
-    '<button type="button" class="chat-msg-act" data-act="del" aria-label="删除这条消息">✕ 删除</button>';
-  acts.querySelector('[data-act="edit"]').addEventListener('click', () => startEditMsg(msgEl, idx));
-  acts.querySelector('[data-act="del"]').addEventListener('click', () => deleteMsg(idx, msgEl));
-  msgEl.appendChild(acts);
-}
+function attachResendBtn(msgEl, idx) { attachMsgRow(msgEl, idx); }
+function attachMsgActions(msgEl, idx) { attachMsgRow(msgEl, idx); }
 
 function startEditMsg(msgEl, idx) {
-  if (idx < 0 || idx >= chatMessages.length || msgEl.classList.contains('chat-msg-editing')) return;
-  const textEl = msgEl.querySelector('.chat-msg-text');
-  const cur = chatMessages[idx];
+  const i = idx != null ? Number(idx) : -1;
+  const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
+  if (!host || i < 0 || i >= chatMessages.length || host.classList.contains('chat-msg-editing')) return;
+  const textEl = msgEl.classList.contains('chat-msg-text') ? msgEl : msgEl.querySelector('.chat-msg-text');
+  const cur = chatMessages[i];
   if (!textEl || !cur) return;
-  msgEl.classList.add('chat-msg-editing');
+  host.classList.add('chat-msg-editing');
   const ta = document.createElement('textarea');
   ta.className = 'chat-msg-edit-textarea';
   ta.value = cur.content;
@@ -824,12 +851,14 @@ function startEditMsg(msgEl, idx) {
 }
 
 function deleteMsg(idx, msgEl) {
-  if (idx < 0 || idx >= chatMessages.length) return;
-  const role = chatMessages[idx].role;
+  const i = idx != null ? Number(idx) : -1;
+  if (i < 0 || i >= chatMessages.length) return;
+  const role = chatMessages[i].role;
   if (role !== 'user' && role !== 'assistant') return;
-  chatMessages.splice(idx, 1);
+  chatMessages.splice(i, 1);
   saveChatHistory();
-  if (msgEl && msgEl.parentElement) msgEl.remove();
+  const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
+  if (host && host.parentElement) host.remove();
   import('./utils.js').then(m => m.showToast('已删除该消息', 'success'));
 }
 
@@ -1130,6 +1159,7 @@ const MAX_ROUNDS = 12;              // 工具调用轮数上限（原 25，平�
 const STREAM_TIMEOUT_MS = 120000;   // 主对话流式请求超时（超时自动 abort 并复位 UI）
 const TOOL_DETAIL_MAX = 800;        // 工具结果 detail 注入上下文的最大长度（搜索类结果足够，控制上下文膨胀）
 const TOKEN_BUDGET = 16000;         // 每轮请求上下文 token 预算（超预算两档降级）
+let lastTokensTotal = 0;            // 最近一轮实际发送的上下文估算（写入 assistant 消息，按钮行显示）
 
 // 估算整组消息的 token 总数（含 tool_calls 的 JSON 序列化）
 function countMessagesTokens(messages) {
@@ -1154,19 +1184,6 @@ function trimToBudget(messages, budget) {
   }
   if (folded > 0) rest.unshift({ role: 'user', content: '（为控制上下文长度，较早的对话已折叠，无需回溯，继续当前任务即可）' });
   return [system, ...rest];
-}
-
-// 界面显示当前轮上下文估算（输入栏上方小字）
-function updateTokenMeta(messages, budgetLevel) {
-  const el = $('chatTokenMeta');
-  if (!el) return;
-  const total = countMessagesTokens(messages);
-  el.hidden = false;
-  let label = '上下文 ≈ ' + total.toLocaleString() + ' tok / 预算 ' + TOKEN_BUDGET.toLocaleString();
-  if (budgetLevel === 1) label += ' · 记忆注入已压缩';
-  else if (budgetLevel === 2) label += ' · 较早对话已折叠';
-  el.textContent = label;
-  el.classList.toggle('over', total > TOKEN_BUDGET);
 }
 
 function genToolCallId() {
@@ -1221,8 +1238,8 @@ async function sendChat(prevText) {
   }
 
   if (prevText == null) {
-    appendChatMessage('user', text);
     chatMessages.push({ role: 'user', content: text });
+    appendChatMessage('user', text, chatMessages.length - 1);
     trimHistory();
     maybeGenerateTitle(); // 首条消息后异步生成 AI 标题（不阻塞对话）
   }
@@ -1249,7 +1266,9 @@ async function sendChat(prevText) {
       budgetLevel = 1;
     }
   }
-  updateTokenMeta(messages, budgetLevel);
+  // 本轮上下文估算：写入 assistant 回复消息，按钮行显示为 token 标签
+  lastTokensTotal = countMessagesTokens(messages);
+  void budgetLevel;
 
   // 流开始时的会话/世界书快照：提交结果前校验，防止写进切换后的会话/书本
   const sessionIdAtStart = activeSessionId;
@@ -1343,7 +1362,7 @@ async function sendChat(prevText) {
           import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
           return;
         }
-        chatMessages.push({ role: 'assistant', content: clean });
+        chatMessages.push({ role: 'assistant', content: clean, tokens: lastTokensTotal });
         trimHistory();
         attachResendBtn(msgEl); // 重新生成按钮
         // 分层记忆：记一条回合小总结，满阈值则后台整合大总结（不阻塞）
@@ -1357,7 +1376,7 @@ async function sendChat(prevText) {
       import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
       return;
     }
-    chatMessages.push({ role: 'assistant', content: '(本回合操作较多未给出总结)' });
+    chatMessages.push({ role: 'assistant', content: '(本回合操作较多未给出总结)', tokens: lastTokensTotal });
     trimHistory();
     pushTurnMemory({ user: text, trace: turnTrace, reply: '(本回合操作较多未给出总结)' });
     maybeRollup();
