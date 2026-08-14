@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   createDefaultWritingTemplate,
+  DEFAULT_WRITING_TEMPLATE,
   formatWritingTemplateForTool,
   buildWritingTemplateGenerationMessages,
   loadWritingTemplate,
@@ -39,7 +40,7 @@ test('saves and loads normalized writing templates per book', () => {
 
   assert.equal(template.general, '不要空框架。');
   assert.equal(template.location, '入口伪装：写入口\n隐藏风险：写风险');
-  assert.equal(template.character, '');
+  assert.equal(template.character, DEFAULT_WRITING_TEMPLATE.character);
   assert.equal(template.unknown, undefined);
 });
 
@@ -73,7 +74,7 @@ test('parses AI generated template JSON', () => {
 
   assert.equal(parsed.general, '不要空框架');
   assert.equal(parsed.location, '入口伪装：写入口');
-  assert.equal(parsed.character, '');
+  assert.equal(parsed.character, DEFAULT_WRITING_TEMPLATE.character);
 });
 
 test('parses fenced AI generated template JSON', () => {

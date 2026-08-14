@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="style.css?v=mag10" />
+  <link rel="stylesheet" href="style.css?v=mag12" />
 </head>
 <body>
   <main class="app">
@@ -305,6 +305,12 @@
 
         <div class="settings-pane" data-pane="ai" hidden>
         <div class="settings-group">
+          <div class="setting" id="usageStatsRow" style="display:none">
+            <div style="min-width:0;flex:1">
+              <strong>AI 用量统计（当前世界书）</strong>
+              <small id="usageStatsLabel">—</small>
+            </div>
+          </div>
           <div class="setting" id="apiConfigRow">
             <div style="min-width:0;flex:1">
               <strong>AI 接口</strong>
@@ -377,6 +383,7 @@
               <button class="action" id="cloudTestBtn">测试连接</button>
               <button class="action primary" id="cloudUploadBtn">上传到云端</button>
               <button class="action danger" id="cloudDownloadBtn">从云端拉取</button>
+              <button class="action" id="cloudVersionsBtn">历史版本</button>
             </div>
             <small class="cloud-status" id="cloudStatus"></small>
           </div>
@@ -515,7 +522,8 @@
       <h3 id="templateModalTitle">AI 写作模板</h3>
       <p class="memory-note">按当前世界书保存。这里写的是占位模板，例如“世界观核心：根据用户输入描述当前世界观，约 150 字”。AI 可以通过工具读取，智能条目预览也会自动参考。</p>
       <div id="templateFields"></div>
-      <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
+      <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr 1fr">
+        <button class="action danger" id="resetTemplateBtn">恢复默认</button>
         <button class="action" id="generateTemplateBtn">AI 写模板</button>
         <button class="action" data-close-modal="templateModal">取消</button>
         <button class="action primary" id="saveTemplateBtn">保存模板</button>
@@ -627,6 +635,33 @@
   </div>
 
   <!-- 快捷键一览 -->
+  <div class="modal" id="importModal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+    <div class="sheet">
+      <div class="mini">Import</div>
+      <h3 id="importModalTitle">检测到重复条目</h3>
+      <p class="import-modal-msg" id="importModalMsg" style="margin:0 0 12px;opacity:.85"></p>
+      <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
+        <button class="action" id="importMergeBtn">合并（跳过重复）</button>
+        <button class="action" id="importAllBtn">全部导入</button>
+        <button class="action danger" id="importNewBookBtn">导入为新书</button>
+      </div>
+      <div class="sheet-actions">
+        <button class="action" data-close-modal="importModal">取消</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal" id="cloudVersionsModal" role="dialog" aria-modal="true" aria-labelledby="cloudVersionsModalTitle">
+    <div class="sheet">
+      <div class="mini">Cloud</div>
+      <h3 id="cloudVersionsModalTitle">云端历史版本</h3>
+      <small style="display:block;margin:-6px 0 10px;opacity:.6">本机上传时保留最近 5 个版本（仅本机可见）</small>
+      <div class="shortcut-list" id="cloudVersionsList"></div>
+      <div class="sheet-actions">
+        <button class="action" data-close-modal="cloudVersionsModal">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="shortcutModal" role="dialog" aria-modal="true" aria-labelledby="shortcutModalTitle">
     <div class="sheet">
       <div class="mini">Shortcuts</div>
@@ -659,7 +694,7 @@
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 
-  <script type="module" src="app.js?v=mag10"></script>
+  <script type="module" src="app.js?v=mag12"></script>
   <script>
     // PWA: Service Worker 注册（仅 HTTPS/localhost 安全上下文生效）
     if ('serviceWorker' in navigator) {

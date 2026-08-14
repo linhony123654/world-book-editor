@@ -81,6 +81,11 @@ db.exec(`
     s3_endpoint TEXT, s3_region TEXT, s3_bucket TEXT, s3_access_key TEXT, s3_secret_key TEXT,
     remote_path TEXT NOT NULL DEFAULT 'world-books-backup.json',
     updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS cloud_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    uploaded_at TEXT DEFAULT (datetime('now'))
   )
 `);
 
@@ -302,8 +307,10 @@ function webdavTarget(cfg) {
   const p = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
   return base + '/' + p;
 }
-async function webdavPut(cfg, body) {
-  const r = await fetch(webdavTarget(cfg), {
+async function webdavPut(cfg, path, body) {
+  let base = String(cfg.webdav_url || '').trim().replace(/\/+$/, '');
+  const p = String(path || '').replace(/^\/+/, '');
+  const r = await fetch(base + '/' + p, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...webdavAuthHeader(cfg) },
     body
@@ -311,8 +318,10 @@ async function webdavPut(cfg, body) {
   if (!r.ok && r.status !== 201 && r.status !== 204) throw new Error('WebDAV PUT ' + r.status);
   return r;
 }
-async function webdavGet(cfg) {
-  const r = await fetch(webdavTarget(cfg), { headers: { ...webdavAuthHeader(cfg) } });
+async function webdavGet(cfg, path) {
+  let base = String(cfg.webdav_url || '').trim().replace(/\/+$/, '');
+  const p = String(path || '').replace(/^\/+/, '');
+  const r = await fetch(base + '/' + p, { headers: { ...webdavAuthHeader(cfg) } });
   if (!r.ok) throw new Error('WebDAV GET ' + r.status);
   return r.text();
 }
@@ -369,27 +378,34 @@ function s3ObjectUrl(cfg, objectPath) {
   const endpoint = String(cfg.s3_endpoint || '').trim().replace(/\/+$/, '');
   return endpoint + '/' + s3EncodePath(String(cfg.s3_bucket || '') + '/' + String(objectPath || '').replace(/^\/+/, ''));
 }
-async function s3Put(cfg, body) {
-  const objectPath = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
-  const headers = s3Headers(cfg, 'PUT', objectPath, body, { 'Content-Type': 'application/json' });
-  const r = await fetch(s3ObjectUrl(cfg, objectPath), { method: 'PUT', headers, body });
+async function s3Put(cfg, objectPath, body) {
+  const p = String(objectPath || '').replace(/^\/+/, '');
+  const headers = s3Headers(cfg, 'PUT', p, body, { 'Content-Type': 'application/json' });
+  const r = await fetch(s3ObjectUrl(cfg, p), { method: 'PUT', headers, body });
   if (!r.ok) throw new Error('S3 PUT ' + r.status + ': ' + (await r.text()).slice(0, 200));
   return r;
 }
-async function s3Get(cfg) {
-  const objectPath = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
-  const headers = s3Headers(cfg, 'GET', objectPath, null);
-  const r = await fetch(s3ObjectUrl(cfg, objectPath), { headers });
+async function s3Get(cfg, objectPath) {
+  const p = String(objectPath || '').replace(/^\/+/, '');
+  const headers = s3Headers(cfg, 'GET', p, null);
+  const r = await fetch(s3ObjectUrl(cfg, p), { headers });
   if (!r.ok) throw new Error('S3 GET ' + r.status + ': ' + (await r.text()).slice(0, 200));
   return r.text();
 }
 
 // ---- 云端动作统一入口 ----
 function cloudAction(cfg) {
+  const mainPath = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
   return {
-    upload: (body) => cfg.provider === 's3' ? s3Put(cfg, body) : webdavPut(cfg, body),
-    download: () => cfg.provider === 's3' ? s3Get(cfg) : webdavGet(cfg)
+    upload: (path, body) => cfg.provider === 's3' ? s3Put(cfg, path, body) : webdavPut(cfg, path, body),
+    download: (path) => cfg.provider === 's3' ? s3Get(cfg, path || mainPath) : webdavGet(cfg, path || mainPath)
   };
+}
+// 版本文件路径：remote_path 的 stem 加时间戳后缀
+function versionPathFor(cfg, ts) {
+  const p = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
+  const dot = p.lastIndexOf('.');
+  return (dot > 0 ? p.slice(0, dot) : p) + '-' + ts + (dot > 0 ? p.slice(dot) : '');
 }
 async function cloudTest(cfg) {
   if (cfg.provider === 's3') {
@@ -473,20 +489,33 @@ app.post('/api/cloud/upload', async (req, res) => {
   const cfg = getCloudConfig();
   if (!cfg) return res.status(400).json({ error: '尚未配置外置存储' });
   try {
-    const bundle = buildBundle();
-    await cloudAction(cfg).upload(JSON.stringify(bundle));
+    const bundle = JSON.stringify(buildBundle());
+    const ts = new Date().toISOString().replace(/[:-]/g, '').replace(/\.\d{3}/g, '').slice(0, 15);
+    const mainPath = String(cfg.remote_path || 'world-books-backup.json').replace(/^\/+/, '');
+    // 主文件 + 时间戳版本文件；版本清单保留最近 5 条
+    await cloudAction(cfg).upload(mainPath, bundle);
+    const vpath = versionPathFor(cfg, ts);
+    await cloudAction(cfg).upload(vpath, bundle);
+    db.prepare('INSERT INTO cloud_versions (path) VALUES (?)').run(vpath);
+    db.prepare('DELETE FROM cloud_versions WHERE id NOT IN (SELECT id FROM cloud_versions ORDER BY id DESC LIMIT 5)').run();
     saveCloudConfig({ ...cfg, updated_at: new Date().toISOString() });
-    res.json({ ok: true, books: bundle.books.length, exportedAt: bundle.exportedAt });
+    res.json({ ok: true, books: JSON.parse(bundle).books.length, exportedAt: JSON.parse(bundle).exportedAt, versionPath: vpath });
   } catch (e) {
     res.status(502).json({ error: '上传失败: ' + e.message });
   }
+});
+
+app.get('/api/cloud/versions', (req, res) => {
+  const rows = db.prepare('SELECT path, uploaded_at FROM cloud_versions ORDER BY id DESC LIMIT 5').all();
+  res.json({ versions: rows });
 });
 
 app.post('/api/cloud/download', async (req, res) => {
   const cfg = getCloudConfig();
   if (!cfg) return res.status(400).json({ error: '尚未配置外置存储' });
   try {
-    const text = await cloudAction(cfg).download();
+    const { versionPath } = req.body || {};
+    const text = await cloudAction(cfg).download(versionPath);
     let bundle;
     try { bundle = JSON.parse(text); } catch (e) { throw new Error('云端文件不是有效 JSON'); }
     const stat = restoreBundle(bundle);
@@ -520,10 +549,14 @@ app.post('/api/books', (req, res) => {
 
 // ===== API: 保存世界书（自动保存） =====
 app.put('/api/books/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM world_books WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id, updated_at FROM world_books WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'not found' });
-  const { data, name } = req.body;
+  const { data, name, baseUpdatedAt, force } = req.body;
   if (!data || !data.entries) return res.status(400).json({ error: 'invalid data' });
+  // 多端冲突检测：baseUpdatedAt 与库中 updated_at 不一致 = 数据已在别处被修改
+  if (!force && baseUpdatedAt && existing.updated_at !== baseUpdatedAt) {
+    return res.status(409).json({ error: 'conflict', message: '数据已在其他设备/标签页被修改', serverUpdatedAt: existing.updated_at });
+  }
   const entryCount = Object.keys(data.entries).length;
   const updates = [];
   const params = [];
@@ -531,7 +564,8 @@ app.put('/api/books/:id', (req, res) => {
   updates.push('data = ?', 'entry_count = ?', "updated_at = datetime('now')");
   params.push(JSON.stringify(data), entryCount, req.params.id);
   db.prepare(`UPDATE world_books SET ${updates.join(', ')} WHERE id = ?`).run(...params);
-  res.json({ ok: true, entry_count: entryCount });
+  const row = db.prepare('SELECT updated_at FROM world_books WHERE id = ?').get(req.params.id);
+  res.json({ ok: true, entry_count: entryCount, updated_at: row.updated_at });
 });
 
 // ===== API: 删除世界书（删除前自动备份到 backups/deleted/，防止误删） =====

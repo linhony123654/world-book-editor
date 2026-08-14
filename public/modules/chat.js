@@ -12,7 +12,7 @@ import { extractReasoningDelta, hasVisibleAssistantStream, reasoningDetailsShoul
 import { applyVisibleLimitToChildren, readChatVisibleLimit } from './chat-view.js';
 import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows, formatDecision } from './smart-draft.js';
 import { clearActiveSmartDraft, createSmartDraftState, setActiveSmartDraft, takeActiveSmartDraft } from './smart-draft-state.js';
-import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, selectWritingTemplate } from './writing-template.js';
+import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, selectWritingTemplate, writingTemplateKey } from './writing-template.js';
 
 // ===== 聊天状态 =====
 const chatMessages = [];
@@ -125,7 +125,13 @@ let sessions = [];          // 当前书的会话列表
 let activeSessionId = null; // 活动会话 id
 
 function makeSession() {
-  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now(), aiTitled: false, memory: emptyMemory() };
+  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now(), aiTitled: false, memory: emptyMemory(), tokensTotal: 0 };
+}
+
+// 累计本会话的发送 token（持久化在 session 对象，随 saveChatHistory 落库）
+function accumulateSessionTokens() {
+  const cur = sessions.find(s => s.id === activeSessionId);
+  if (cur) cur.tokensTotal = (cur.tokensTotal || 0) + (lastTokensTotal || 0);
 }
 
 function titleFromMessages(msgs) {
@@ -752,6 +758,19 @@ export function initChat() {
   if ($openTemplate) $openTemplate.addEventListener('click', openTemplateModal);
   const $saveTemplate = $('saveTemplateBtn');
   if ($saveTemplate) $saveTemplate.addEventListener('click', saveTemplateForm);
+  const $resetTemplate = $('resetTemplateBtn');
+  if ($resetTemplate) $resetTemplate.addEventListener('click', () => {
+    try {
+      const key = writingTemplateKey(currentBookId);
+      localStorage.removeItem(key);
+      import('./writing-template.js').then(() => {
+        renderTemplateForm();
+        import('./utils.js').then(m => m.showToast('已恢复内置默认模板', 'success'));
+      });
+    } catch (e) {
+      import('./utils.js').then(m => m.showToast('恢复失败: ' + e.message, 'error'));
+    }
+  });
   const $generateTemplate = $('generateTemplateBtn');
   if ($generateTemplate) $generateTemplate.addEventListener('click', generateTemplateWithAI);
   const $clearMem = $('clearMemoryBtn');
@@ -810,6 +829,29 @@ export function initChat() {
 // ===== 消息操作行：重新生成(仅 assistant) / 编辑 / 删除 + token 标签 =====
 // msgEl 可能是 .chat-msg-text（流式气泡）或外层 .chat-msg：按钮行统一挂外层气泡
 // idx 缺省时取最后一条消息（流式完成场景，修复此前 undefined 索引导致点击无效）
+// 复制消息文本：navigator.clipboard 失败时降级 textarea + execCommand（http 环境可用）
+function copyMsgText(i) {
+  const m = chatMessages[i];
+  const text = m ? String(m.content || '') : '';
+  if (!text) { import('./utils.js').then(u => u.showToast('没有可复制的内容', 'info')); return; }
+  const done = () => import('./utils.js').then(u => u.showToast('已复制到剪贴板', 'success'));
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    if (ok) done(); else import('./utils.js').then(u => u.showToast('复制失败', 'error'));
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  } else fallback();
+}
+
 function attachMsgRow(msgEl, idx) {
   const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
   if (!host || host.querySelector('.chat-msg-actions')) return;
@@ -828,6 +870,14 @@ function attachMsgRow(msgEl, idx) {
     resend.addEventListener('click', resendLast);
     row.appendChild(resend);
   }
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'chat-msg-act';
+  copy.title = '复制这条消息';
+  copy.setAttribute('aria-label', '复制这条消息');
+  copy.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>复制</span>';
+  copy.addEventListener('click', () => copyMsgText(i));
+  row.appendChild(copy);
   const edit = document.createElement('button');
   edit.type = 'button';
   edit.className = 'chat-msg-act';
@@ -1158,8 +1208,19 @@ function scrollChatToBottom() {
   updateToBottomBtn();
 }
 
-export function applyChatVisibleLimit() {
-  const container = $('chat-messages');
+// ===== AI 用量统计：当前书全部会话的估算 token 累计 =====
+export function getChatUsage() {
+  let tokens = 0;
+  let withStats = 0;
+  for (const s of sessions) {
+    const t = (s.tokensTotal || 0) || s.messages.reduce((sum, m) => sum + ((m && m.tokens) || 0), 0);
+    tokens += t;
+    if (t > 0) withStats++;
+  }
+  return { sessions: sessions.length, tokens, withStats };
+}
+
+export function applyChatVisibleLimit() {  const container = $('chat-messages');
   if (!container) return;
   const items = Array.from(container.children).filter(el => !el.classList.contains('chat-welcome'));
   applyVisibleLimitToChildren(items, readChatVisibleLimit());
@@ -1420,6 +1481,7 @@ async function sendChat(prevText) {
           return;
         }
         chatMessages.push({ role: 'assistant', content: clean, tokens: lastTokensTotal });
+        accumulateSessionTokens();
         trimHistory();
         attachResendBtn(msgEl); // 重新生成按钮
         // 本回合有实际改动 → 渲染「本轮改动」卡片（可跳转/一键撤销）
@@ -1436,6 +1498,7 @@ async function sendChat(prevText) {
       return;
     }
     chatMessages.push({ role: 'assistant', content: '(本回合操作较多未给出总结)', tokens: lastTokensTotal });
+    accumulateSessionTokens();
     trimHistory();
     pushTurnMemory({ user: text, trace: turnTrace, reply: '(本回合操作较多未给出总结)' });
     maybeRollup();

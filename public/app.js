@@ -1,6 +1,6 @@
 // ===== World Book Editor — 主入口（杂志风导航） =====
 import { $, escHtml, escAttr, showToast, showConfirm, openModal, closeModal } from './modules/utils.js';
-import { loadBookList, loadBook, importFile, exportFile, exportMarkdown, autoSave, scheduleSave } from './modules/api.js';
+import { loadBookList, loadBook, importFile, exportFile, exportMarkdown, autoSave, scheduleSave, setWbeDeps } from './modules/api.js';
 import { renderSidebar, initSidebar } from './modules/sidebar.js';
 import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
 import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
@@ -123,7 +123,7 @@ async function bootApp() {
   initSidebar(onSelectEntry, setScreen);
   initChat();
   initBooks({ renderSidebar, selectEntry: onSelectEntry, renderEditorEmpty }, setScreen);
-
+  setWbeDeps({ renderSidebar, selectEntry: onSelectEntry, renderEditorEmpty });
   initTheme();
   initAutoSaveSwitch();
   // AI 改动卡片点击条目 → 跳编辑器
@@ -402,7 +402,7 @@ function bindSettings() {
   });
 }
 
-function refreshSettings() {
+async function refreshSettings() {
   const profiles = loadProfiles();
   const active = getProfile(activeProfileId()) || profiles[0] || null;
 
@@ -431,6 +431,24 @@ function refreshSettings() {
   if (sw) {
     sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
     syncSwitch(sw);
+  }
+  // AI 用量统计（当前世界书全部会话）
+  const usageRow = $('usageStatsRow');
+  const usageLabel = $('usageStatsLabel');
+  if (usageRow && usageLabel) {
+    try {
+      const { getChatUsage } = await import('./modules/chat.js');
+      const usage = getChatUsage();
+      if (usage.sessions > 0) {
+        usageRow.style.display = '';
+        usageLabel.textContent = usage.sessions + ' 个会话 · 累计发送 ≈ ' + usage.tokens.toLocaleString() + ' tok' +
+          (usage.withStats < usage.sessions ? '（旧会话未计入）' : '');
+      } else {
+        usageRow.style.display = 'none';
+      }
+    } catch (e) {
+      usageRow.style.display = 'none';
+    }
   }
   const chatLimit = $('chatVisibleLimitInput');
   if (chatLimit) chatLimit.value = String(readChatVisibleLimit());
@@ -769,6 +787,57 @@ function bindCloud() {
     } catch (e) {
       setCloudStatus('拉取失败: ' + e.message, 'err');
       showToast('拉取失败: ' + e.message, 'error');
+    }
+  });
+  $('cloudVersionsBtn') && $('cloudVersionsBtn').addEventListener('click', async () => {
+    const list = $('cloudVersionsList');
+    if (!list) return;
+    list.innerHTML = '<div class="empty-list">加载中…</div>';
+    openModal($('cloudVersionsModal'));
+    try {
+      const r = await cloudApi('/api/cloud/versions', 'GET');
+      if (!r.versions || r.versions.length === 0) {
+        list.innerHTML = '<div class="empty-list">暂无历史版本，上传时自动保留最近 5 个。</div>';
+        return;
+      }
+      list.innerHTML = r.versions.map(v =>
+        '<div class="shortcut-row">' +
+          '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">' +
+            '<small style="display:block;opacity:.7">' + escHtml(String(v.path).split('/').pop()) + '</small>' +
+            escHtml(String(v.uploaded_at || '').replace('T', ' ').slice(0, 19)) +
+          '</span>' +
+          '<button class="action danger" data-vpath="' + escAttr(v.path) + '">拉取</button>' +
+        '</div>'
+      ).join('');
+      list.querySelectorAll('[data-vpath]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const ok = await showConfirm({
+            title: '拉取历史版本',
+            message: '将用该历史版本整体覆盖当前所有世界书与 AI 记忆（本地先备份到 backups/cloud/）。继续？',
+            okText: '拉取并覆盖',
+            danger: true
+          });
+          if (!ok) return;
+          try {
+            await cloudApi('/api/cloud/config', 'PUT', cloudConfigFromForm());
+            const rr = await cloudApi('/api/cloud/download', 'POST', { versionPath: btn.dataset.vpath });
+            closeModal($('cloudVersionsModal'));
+            const books = await loadBookList();
+            const cur = (await import('./modules/state.js')).currentBookId;
+            const target = books.find(b => b.id === cur) || books[0];
+            if (target) {
+              await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty);
+              await ensureMemoryLoaded();
+            } else renderEditorEmpty();
+            setCloudStatus('已恢复历史版本（' + rr.books + ' 本世界书）', 'ok');
+            showToast('已从历史版本恢复 ' + rr.books + ' 本世界书', 'success');
+          } catch (e) {
+            showToast('拉取失败: ' + e.message, 'error');
+          }
+        });
+      });
+    } catch (e) {
+      list.innerHTML = '<div class="empty-list">读取失败: ' + escHtml(e.message) + '</div>';
     }
   });
 }
