@@ -132,6 +132,33 @@ export function exportFile() {
   showToast('已导出', 'success');
 }
 
+// ===== 导出为 Markdown（按条目生成，适合阅读/分享） =====
+export function exportMarkdown() {
+  if (!worldBook || !entries) { showToast('没有加载数据', 'error'); return; }
+  const $fileName = document.getElementById('file-name');
+  const bookName = $fileName ? $fileName.textContent : 'world-book';
+  const lines = ['# ' + bookName, '', '> 由 World Book Editor 导出 · 共 ' + entries.length + ' 个条目', ''];
+  const sorted = entries.slice().sort((a, b) => a.uid - b.uid);
+  for (const e of sorted) {
+    const wbe = (e.extensions && e.extensions.wbe) || {};
+    const typeLabel = wbe.semanticType ? ' · ' + wbe.semanticType : '';
+    const stateLabel = e.disable ? '· 禁用' : (e.constant ? '· 常驻' : '· 关键词');
+    lines.push('## ' + (e.comment || 'UID ' + e.uid) + ' `#' + e.uid + '` ' + typeLabel + ' ' + stateLabel, '');
+    if (e.key && e.key.length) lines.push('**触发词：** ' + e.key.join('、'), '');
+    if (e.keysecondary && e.keysecondary.length) lines.push('**次要触发词：** ' + e.keysecondary.join('、'), '');
+    if (e.content) lines.push(e.content, '');
+    lines.push('---', '');
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (String(bookName).replace(/[\\/:*?"<>|]+/g, '_') || 'world-book') + '.md';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('已导出 Markdown（' + entries.length + ' 条）', 'success');
+}
+
 // ===== 自动保存 =====
 export function scheduleSave() {
   setDirty(true);

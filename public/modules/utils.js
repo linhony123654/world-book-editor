@@ -41,19 +41,42 @@ export function validateWorldBook(data) {
   return null;
 }
 
-// ===== Toast 通知（单一 #toast 元素） =====
+// ===== Toast 通知（单一 #toast 元素；可带一个操作按钮，如「撤销」） =====
+// showToast(msg, type, { actionLabel, onAction, duration })
 let _toastTimer = null;
-export function showToast(msg, type) {
+export function showToast(msg, type, opts) {
   try {
     const el = document.getElementById('toast');
     if (!el) { console.log('[Toast ' + type + '] ' + msg); return; }
-    el.textContent = msg;
+    const textEl = document.getElementById('toastText');
+    if (textEl) textEl.textContent = msg;
+    else el.textContent = msg;
     el.className = 'toast toast-' + (type || 'info');
     // 错误型提示用 alert 角色（assertive），其余用 status（polite），让读屏可感知
     el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    // 可选操作按钮：显示并绑定一次性点击
+    const actEl = document.getElementById('toastAction');
+    const actionLabel = (opts && opts.actionLabel) || '';
+    if (actEl) {
+      if (actionLabel) {
+        actEl.textContent = actionLabel;
+        actEl.hidden = false;
+        actEl.onclick = () => {
+          actEl.hidden = true;
+          if (opts && opts.onAction) opts.onAction();
+        };
+      } else {
+        actEl.hidden = true;
+        actEl.onclick = null;
+      }
+    }
     requestAnimationFrame(() => el.classList.add('show'));
     if (_toastTimer) clearTimeout(_toastTimer);
-    _toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+    const duration = (opts && opts.duration) || 2400;
+    _toastTimer = setTimeout(() => {
+      el.classList.remove('show');
+      if (actEl) actEl.hidden = true;
+    }, duration);
   } catch (e) {
     console.log('[Toast error]', e, msg);
   }

@@ -1,6 +1,6 @@
 // ===== Editor 屏（杂志风：完整 42 字段，核心可见 + 高级折叠） =====
 import { escHtml, escAttr, $, showConfirm } from './utils.js';
-import { worldBook, entries, currentUid, nextUid, createEntry, uidKey, setEntries, snapshotForUndo } from './state.js';
+import { worldBook, entries, currentUid, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo } from './state.js';
 import { scheduleSave } from './api.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
 
@@ -372,7 +372,19 @@ export async function deleteEntry() {
   renderSidebar();
   if (remaining.length > 0) selectEntry(remaining[0].uid);
   else renderEditorEmpty();
-  import('./utils.js').then(m => m.showToast('已删除「' + title + '」', 'success'));
+  import('./utils.js').then(m => m.showToast('已删除「' + title + '」', 'success', {
+    actionLabel: '撤销',
+    duration: 6000,
+    onAction: () => {
+      const label = restoreUndo();
+      renderSidebar();
+      const first = entries[0];
+      if (first) selectEntry(first.uid);
+      else renderEditorEmpty();
+      scheduleSave();
+      import('./utils.js').then(m2 => m2.showToast('已撤销: ' + label, 'success'));
+    }
+  }));
   scheduleSave();
 }
 

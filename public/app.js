@@ -1,6 +1,6 @@
 // ===== World Book Editor — 主入口（杂志风导航） =====
 import { $, escHtml, escAttr, showToast, openModal, closeModal } from './modules/utils.js';
-import { loadBookList, loadBook, importFile, exportFile, autoSave, scheduleSave } from './modules/api.js';
+import { loadBookList, loadBook, importFile, exportFile, exportMarkdown, autoSave, scheduleSave } from './modules/api.js';
 import { renderSidebar, initSidebar } from './modules/sidebar.js';
 import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
 import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
@@ -181,6 +181,13 @@ function bindUndo() {
     e.preventDefault();
     undoLast();
   });
+  // Ctrl/Cmd+S：任意位置手动保存（拦截浏览器「保存页面」）
+  document.addEventListener('keydown', e => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    if (e.key.toLowerCase() !== 's') return;
+    e.preventDefault();
+    manualSave();
+  });
 }
 
 function openEntryModal() {
@@ -204,6 +211,7 @@ function bindSettings() {
     e.target.value = '';
   });
   $('exportBtn') && $('exportBtn').addEventListener('click', exportFile);
+  $('exportMdBtn') && $('exportMdBtn').addEventListener('click', exportMarkdown);
 
   // ===== 配置秘钥：换浏览器/设备时一键复制与导入 =====
   // 安全说明：base64 只是编码，任何人都能解开。这里用 Web Crypto 做

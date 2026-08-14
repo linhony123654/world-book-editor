@@ -336,7 +336,9 @@ function renderChatHistory() {
   const c = $('chat-messages');
   if (!c) return;
   c.innerHTML = WELCOME_HTML;
-  for (const m of chatMessages) appendChatMessage(m.role, m.content);
+  for (let i = 0; i < chatMessages.length; i++) {
+    appendChatMessage(chatMessages[i].role, chatMessages[i].content, i);
+  }
 }
 
 // 本回合工具列表浓缩成 "search_entries×3, add_entries×1"
@@ -758,7 +760,7 @@ export function initChat() {
 }
 
 // ===== 重新生成：删除最后一条 AI 回复，用同一条用户消息重发 =====
-function attachResendBtn(msgEl) {
+function attachResendBtn(msgEl, idx) {
   if (!msgEl || msgEl.querySelector('.chat-resend')) return;
   const btn = document.createElement('button');
   btn.className = 'chat-resend';
@@ -767,6 +769,67 @@ function attachResendBtn(msgEl) {
   btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a9 9 0 0 1 15-6.7L21 8"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a9 9 0 0 1-15 6.7L3 16"/></svg><span>重新生成</span>';
   btn.addEventListener('click', resendLast);
   msgEl.appendChild(btn);
+  attachMsgActions(msgEl, idx);
+}
+
+// ===== 消息编辑/删除（user 与 assistant 消息） =====
+function attachMsgActions(msgEl, idx) {
+  if (!msgEl || msgEl.querySelector('.chat-msg-actions')) return;
+  const acts = document.createElement('div');
+  acts.className = 'chat-msg-actions';
+  acts.innerHTML =
+    '<button type="button" class="chat-msg-act" data-act="edit" aria-label="编辑这条消息">✎ 编辑</button>' +
+    '<button type="button" class="chat-msg-act" data-act="del" aria-label="删除这条消息">✕ 删除</button>';
+  acts.querySelector('[data-act="edit"]').addEventListener('click', () => startEditMsg(msgEl, idx));
+  acts.querySelector('[data-act="del"]').addEventListener('click', () => deleteMsg(idx, msgEl));
+  msgEl.appendChild(acts);
+}
+
+function startEditMsg(msgEl, idx) {
+  if (idx < 0 || idx >= chatMessages.length || msgEl.classList.contains('chat-msg-editing')) return;
+  const textEl = msgEl.querySelector('.chat-msg-text');
+  const cur = chatMessages[idx];
+  if (!textEl || !cur) return;
+  msgEl.classList.add('chat-msg-editing');
+  const ta = document.createElement('textarea');
+  ta.className = 'chat-msg-edit-textarea';
+  ta.value = cur.content;
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'action primary';
+  saveBtn.textContent = '保存';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'action';
+  cancelBtn.textContent = '取消';
+  const actions = document.createElement('div');
+  actions.className = 'chat-msg-edit-actions';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(saveBtn);
+  textEl.innerHTML = '';
+  textEl.appendChild(ta);
+  textEl.appendChild(actions);
+  ta.focus();
+  saveBtn.addEventListener('click', () => {
+    const v = ta.value.trim();
+    if (!v) { import('./utils.js').then(m => m.showToast('内容不能为空', 'error')); return; }
+    cur.content = v;
+    // 首条 user 消息变化时同步会话标题（未 AI 命名时）
+    const s = sessions.find(x => x.id === activeSessionId);
+    if (s && !s.aiTitled) s.title = titleFromMessages(chatMessages);
+    saveChatHistory();
+    renderChatHistory(); // 全量重渲染，统一恢复编辑/删除按钮与索引
+    import('./utils.js').then(m => m.showToast('已更新消息', 'success'));
+  });
+  cancelBtn.addEventListener('click', () => renderChatHistory());
+}
+
+function deleteMsg(idx, msgEl) {
+  if (idx < 0 || idx >= chatMessages.length) return;
+  const role = chatMessages[idx].role;
+  if (role !== 'user' && role !== 'assistant') return;
+  chatMessages.splice(idx, 1);
+  saveChatHistory();
+  if (msgEl && msgEl.parentElement) msgEl.remove();
+  import('./utils.js').then(m => m.showToast('已删除该消息', 'success'));
 }
 
 function resendLast() {
@@ -1267,7 +1330,7 @@ async function sendChat(prevText) {
   }
 }
 
-function appendChatMessage(role, text) {
+function appendChatMessage(role, text, idx) {
   const container = $('chat-messages');
   const welcome = container.querySelector('.chat-welcome');
   if (welcome) welcome.remove();
@@ -1277,10 +1340,12 @@ function appendChatMessage(role, text) {
 
   const div = document.createElement('div');
   div.className = 'chat-msg chat-msg-' + role;
+  div.dataset.idx = idx != null ? idx : chatMessages.length;
   div.innerHTML = '<div class="chat-msg-role">' + ({user:'你',assistant:'AI',tool:'工具',error:'错误'}[role]||role) + '</div>' +
     '<div class="chat-msg-text">' + escHtml(text) + '</div>';
   container.appendChild(div);
-  if (role === 'assistant') attachResendBtn(div);
+  if (role === 'assistant') attachResendBtn(div, div.dataset.idx);
+  else if (role === 'user') attachMsgActions(div, div.dataset.idx);
   applyChatVisibleLimit();
   // 自己发的消息和错误强制滚底；其余贴底才跟随
   if (role === 'user' || role === 'error' || isChatNearBottom()) scrollChatToBottom();

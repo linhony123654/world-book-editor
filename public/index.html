@@ -78,12 +78,52 @@
           <input id="searchInput" type="search" placeholder="搜索标题、关键词、内容…" aria-label="搜索条目" />
           <span class="shortcut" id="saveStateLib">已保存</span>
         </label>
+        <div class="search-actions">
+          <button class="icon-btn" id="selectModeBtn" aria-label="批量选择" title="批量选择">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </button>
+        </div>
         <div class="categories" id="categories">
           <button class="category active" data-filter="all">All</button>
           <button class="category" data-filter="constant">常驻</button>
           <button class="category" data-filter="keyword">关键词</button>
           <button class="category" data-filter="disabled">禁用</button>
+          <select class="category-select" id="typeFilterSelect" aria-label="按语义类型筛选">
+            <option value="">全部类型</option>
+            <option value="character">人物</option>
+            <option value="location">地点</option>
+            <option value="geography">地理</option>
+            <option value="organization">组织</option>
+            <option value="faction">阵营</option>
+            <option value="law">法律</option>
+            <option value="history">历史</option>
+            <option value="economy">经济</option>
+            <option value="magic">魔法</option>
+            <option value="culture">文化</option>
+            <option value="event">事件</option>
+            <option value="rule">规则</option>
+            <option value="item">物品</option>
+            <option value="concept">概念</option>
+            <option value="relationship">关系</option>
+            <option value="style">文风</option>
+          </select>
         </div>
+        <div class="stats-row" id="statsRow">
+          <span class="stat">常驻<strong id="statConst">0</strong></span>
+          <span class="stat">关键词<strong id="statKw">0</strong></span>
+          <span class="stat">禁用<strong id="statDisabled">0</strong></span>
+          <span class="stat">全书<strong id="statChars">0</strong> 字</span>
+        </div>
+      </div>
+
+      <div class="batch-bar" id="batchBar">
+        <span class="batch-count" id="batchCount">已选 0 条</span>
+        <button class="batch-btn" id="batchAllBtn">全选</button>
+        <button class="batch-btn" id="batchConstBtn">置常驻</button>
+        <button class="batch-btn" id="batchEnableBtn">启用</button>
+        <button class="batch-btn" id="batchDisableBtn">禁用</button>
+        <button class="batch-btn danger" id="batchDeleteBtn">删除</button>
+        <button class="batch-btn primary" id="batchDoneBtn">完成</button>
       </div>
 
       <div class="section-kicker">
@@ -297,6 +337,10 @@
             <button class="action" id="exportBtn" style="width:82px;">Export</button>
           </div>
           <div class="setting">
+            <div><strong>导出为 Markdown</strong><small>按条目生成 .md，适合阅读与分享</small></div>
+            <button class="action" id="exportMdBtn" style="width:82px;">Export .md</button>
+          </div>
+          <div class="setting">
             <div><strong>重新加载</strong><small id="storageLabel">从服务器拉取当前世界书</small></div>
             <button class="action" id="reloadBtn" style="width:82px;">Reload</button>
           </div>
@@ -459,7 +503,7 @@
     </div>
   </div>
 
-  <div class="toast" id="toast" role="status" aria-live="polite">Saved</div>
+  <div class="toast" id="toast" role="status" aria-live="polite"><span id="toastText">Saved</span><button type="button" id="toastAction" hidden></button></div>
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 

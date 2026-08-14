@@ -1,9 +1,11 @@
 // ===== Library 屏（杂志风：主稿 + 卡片 + 索引列表） =====
-import { escHtml, $ } from './utils.js';
+import { escHtml, $, showToast, showConfirm } from './utils.js';
 import {
   entries, currentUid, currentFilter, searchQuery,
-  setCurrentUid, setCurrentFilter, setSearchQuery
+  worldBook, setEntries, setCurrentUid, setCurrentFilter, setSearchQuery,
+  snapshotForUndo, uidKey
 } from './state.js';
+import { scheduleSave } from './api.js';
 
 // 模块级回调 / 导航
 let onSelectEntryCallback = null;
@@ -12,6 +14,13 @@ let setScreenFn = null;
 // 索引列表分页
 const PAGE_SIZE = 10;
 let indexLimit = PAGE_SIZE;
+
+// 语义类型筛选（叠加在 filter 之上）
+let typeFilter = '';
+
+// 批量选择模式
+let selectMode = false;
+const selectedSet = new Set();
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
@@ -22,6 +31,9 @@ function getFiltered() {
     if (currentFilter === 'disabled') return e.disable;
     return true;
   });
+  if (typeFilter) {
+    list = list.filter(e => e.extensions && e.extensions.wbe && e.extensions.wbe.semanticType === typeFilter);
+  }
   if (searchQuery) {
     const q = searchQuery.toLowerCase();
     list = list.filter(e =>
@@ -33,6 +45,16 @@ function getFiltered() {
   }
   list.sort((a, b) => a.uid - b.uid);
   return list;
+}
+
+// 搜索高亮：escHtml 后按相同子串包 <mark>（escHtml 逐字符映射，转义串与原文子串位置一致）
+function hl(text, q) {
+  const safe = escHtml(text == null ? '' : String(text));
+  if (!q) return safe;
+  const qs = escHtml(q);
+  const idx = safe.toLowerCase().indexOf(qs.toLowerCase());
+  if (idx < 0) return safe;
+  return safe.slice(0, idx) + '<mark>' + safe.slice(idx, idx + qs.length) + '</mark>' + safe.slice(idx + qs.length);
 }
 
 function statusOf(e) {
@@ -68,6 +90,29 @@ export function renderSidebar() {
   });
   renderGrid(filtered.slice(1, 5));
   renderIndex(filtered.slice(5));
+  renderStats();
+  updateBatchCount();
+  // 首次渲染标记 stagger（进入屏时卡片错落入场；筛选/搜索重建不再重复动画）
+  markStagger($('featureEntry'));
+  markStagger($('entryGrid'));
+  markStagger($('indexList'));
+}
+
+function markStagger(el) {
+  if (el && !el.dataset.staggered) { el.classList.add('stagger'); el.dataset.staggered = '1'; }
+}
+
+// ===== 全书统计 =====
+function renderStats() {
+  const constN = entries.filter(e => e.constant && !e.disable).length;
+  const kwN = entries.filter(e => !e.constant && !e.disable).length;
+  const disN = entries.filter(e => e.disable).length;
+  const chars = entries.reduce((s, e) => s + ((e.content || '').length || 0), 0);
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = String(v); };
+  set('statConst', constN);
+  set('statKw', kwN);
+  set('statDisabled', disN);
+  set('statChars', chars.toLocaleString());
 }
 
 // 空状态文案：区分「零条目」与「搜索/筛选无匹配」
@@ -89,7 +134,8 @@ function renderFeature(e, emptyInfo) {
   }
   const st = statusOf(e);
   const kw = (e.key || []).slice(0, 4).join(' · ') || '常驻注入';
-  el.className = 'feature';
+  const selCls = selectMode && selectedSet.has(e.uid) ? ' selected' : '';
+  el.className = 'feature' + selCls;
   el.disabled = false;
   el.innerHTML =
     '<div class="feature-meta">' +
@@ -97,8 +143,8 @@ function renderFeature(e, emptyInfo) {
       '<span>' + escHtml(typeOf(e)) + '</span>' +
       '<span>·</span><span>Lead entry</span>' +
     '</div>' +
-    '<h2 class="feature-title">' + escHtml(e.comment || '(无标题)') + '</h2>' +
-    '<p class="feature-summary">' + escHtml(preview(e).slice(0, 140)) + '</p>' +
+    '<h2 class="feature-title">' + hl(e.comment || '(无标题)', searchQuery) + '</h2>' +
+    '<p class="feature-summary">' + hl(preview(e).slice(0, 140), searchQuery) + '</p>' +
     '<div class="feature-footer">' +
       '<span class="tagline">' + escHtml(kw) + '</span>' +
       '<span class="entry-status ' + st.cls + '"><span class="dot"></span>' + st.label + '</span>' +
@@ -112,11 +158,12 @@ function renderGrid(list) {
   if (!list.length) { el.innerHTML = ''; return; }
   el.innerHTML = list.map(e => {
     const st = statusOf(e);
-    return '<button type="button" class="entry-card" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
+    const selCls = selectMode && selectedSet.has(e.uid) ? ' selected' : '';
+    return '<button type="button" class="entry-card' + selCls + '" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
       '<div class="entry-no">' + pad2(e.uid) + '</div>' +
       '<div class="type">' + escHtml(typeOf(e)) + '</div>' +
-      '<h3>' + escHtml(e.comment || '(无标题)') + '</h3>' +
-      '<p>' + escHtml(preview(e).slice(0, 90)) + '</p>' +
+      '<h3>' + hl(e.comment || '(无标题)', searchQuery) + '</h3>' +
+      '<p>' + hl(preview(e).slice(0, 90), searchQuery) + '</p>' +
       '<div class="entry-status ' + st.cls + '"><span class="dot"></span>' + st.label + '</div>' +
     '</button>';
   }).join('');
@@ -140,10 +187,11 @@ function renderIndex(list) {
   el.innerHTML = shown.map(e => {
     const st = statusOf(e);
     const kw = (e.key || []).slice(0, 3).join(' · ') || (e.constant ? '常驻' : '—');
-    return '<button type="button" class="index-row" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
+    const selCls = selectMode && selectedSet.has(e.uid) ? ' selected' : '';
+    return '<button type="button" class="index-row' + selCls + '" data-uid="' + e.uid + '" aria-label="打开条目 ' + escHtml(e.comment || '(无标题)') + '">' +
       '<div class="index-no">' + pad2(e.uid) + '</div>' +
       '<div class="index-copy">' +
-        '<strong>' + escHtml(e.comment || '(无标题)') + '</strong>' +
+        '<strong>' + hl(e.comment || '(无标题)', searchQuery) + '</strong>' +
         '<small>' + escHtml(kw) + '</small>' +
       '</div>' +
       '<div class="index-state ' + st.cls + '"><span class="dot"></span>' + st.label + '</div>' +
@@ -163,10 +211,93 @@ function renderIndex(list) {
   }
 }
 
-// 点击条目：选中 + 跳到 Editor
+// 点击条目：多选模式下切换选中，否则选中 + 跳到 Editor
 function open(uid) {
+  if (selectMode) { toggleSelect(uid); return; }
   selectEntry(uid);
   if (setScreenFn) setScreenFn('editor');
+}
+
+// ===== 批量选择模式 =====
+function updateBatchCount() {
+  const c = $('batchCount');
+  if (c) c.textContent = '已选 ' + selectedSet.size + ' 条';
+}
+
+function setSelectMode(on) {
+  selectMode = on;
+  const bar = $('batchBar');
+  if (bar) bar.classList.toggle('on', on);
+  const btn = $('selectModeBtn');
+  if (btn) btn.classList.toggle('on', on);
+  if (!on) selectedSet.clear();
+  renderSidebar();
+}
+
+function toggleSelect(uid) {
+  if (selectedSet.has(uid)) selectedSet.delete(uid); else selectedSet.add(uid);
+  document.querySelectorAll('[data-uid="' + uid + '"]').forEach(el2 => el2.classList.toggle('selected', selectedSet.has(uid)));
+  updateBatchCount();
+}
+
+function selectedEntries() {
+  return entries.filter(e => selectedSet.has(e.uid));
+}
+
+// 批量字段操作（置常驻/启用/禁用）
+function batchSetField(field, value, label) {
+  const list = selectedEntries();
+  if (!list.length) { showToast('未选中任何条目', 'info'); return; }
+  snapshotForUndo(label);
+  list.forEach(e => { e[field] = value; });
+  renderSidebar();
+  scheduleSave();
+  showToast(label + ' ' + list.length + ' 条', 'success');
+}
+
+// 批量删除（含确认）
+async function batchDelete() {
+  const list = selectedEntries();
+  if (!list.length) { showToast('未选中任何条目', 'info'); return; }
+  const ok = await showConfirm({
+    title: '批量删除',
+    message: '确定删除选中的 ' + list.length + ' 个条目？可用 Ctrl/Cmd+Z 撤销。',
+    okText: '删除',
+    danger: true
+  });
+  if (!ok) return;
+  snapshotForUndo('批量删除');
+  list.forEach(e => { delete worldBook.entries[uidKey(e.uid)]; });
+  setEntries(entries.filter(e => !selectedSet.has(e.uid)));
+  selectedSet.clear();
+  renderSidebar();
+  // 正编辑的条目若被删，清空编辑器
+  if (currentUid != null && !entries.some(e => e.uid === currentUid)) {
+    setCurrentUid(null);
+    if (deps && deps.renderEditorEmpty) deps.renderEditorEmpty();
+  }
+  scheduleSave();
+  showToast('已删除 ' + list.length + ' 条', 'success');
+}
+
+function initBatchBar() {
+  const modeBtn = $('selectModeBtn');
+  if (modeBtn) modeBtn.addEventListener('click', () => setSelectMode(!selectMode));
+  const allBtn = $('batchAllBtn');
+  if (allBtn) allBtn.addEventListener('click', () => {
+    getFiltered().forEach(e => selectedSet.add(e.uid));
+    renderSidebar();
+  });
+  const constBtn = $('batchConstBtn');
+  if (constBtn) constBtn.addEventListener('click', () => batchSetField('constant', true, '已置常驻'));
+  const enableBtn = $('batchEnableBtn');
+  if (enableBtn) enableBtn.addEventListener('click', () => batchSetField('disable', false, '已启用'));
+  const disableBtn = $('batchDisableBtn');
+  if (disableBtn) disableBtn.addEventListener('click', () => batchSetField('disable', true, '已禁用'));
+  const delBtn = $('batchDeleteBtn');
+  if (delBtn) delBtn.addEventListener('click', batchDelete);
+  const doneBtn = $('batchDoneBtn');
+  if (doneBtn) doneBtn.addEventListener('click', () => setSelectMode(false));
 }
 
 // ===== 选中条目（供 chat.js / api.loadBook 调用，不强制切屏） =====
@@ -227,4 +358,17 @@ export function initSidebar(selectEntryCallback, setScreen) {
   initFilters();
   initSearch();
   initLoadMore();
+  initTypeFilter();
+  initBatchBar();
+}
+
+// 语义类型筛选（与状态筛选叠加）
+function initTypeFilter() {
+  const sel = $('typeFilterSelect');
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    typeFilter = sel.value || '';
+    indexLimit = PAGE_SIZE;
+    renderSidebar();
+  });
 }

@@ -1,5 +1,5 @@
 /* World Book Editor Service Worker —— 缓存静态资源，保证离线可打开 */
-const CACHE = 'wbe-v2';
+const CACHE = 'wbe-v3';
 const CORE = [
   '/',
   '/index.html',
@@ -9,7 +9,7 @@ const CORE = [
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/icon.svg',
-  // 核心 ES 模块：离线首开必须可用
+  // 全部 ES 模块：离线首开必须可用（缺一个 import 失败整个 app 白屏）
   '/modules/utils.js',
   '/modules/state.js',
   '/modules/api.js',
@@ -19,7 +19,17 @@ const CORE = [
   '/modules/books.js',
   '/modules/chat.js',
   '/modules/chat-view.js',
-  '/modules/book-session.js'
+  '/modules/book-session.js',
+  '/modules/writing-template.js',
+  '/modules/smart-draft.js',
+  '/modules/smart-draft-state.js',
+  '/modules/worldbook-intelligence/index.js',
+  '/modules/worldbook-intelligence/taxonomy.js',
+  '/modules/worldbook-intelligence/intent.js',
+  '/modules/worldbook-intelligence/decision-matrix.js',
+  '/modules/worldbook-intelligence/trigger-safety.js',
+  '/modules/worldbook-intelligence/settings-matrix.js',
+  '/modules/worldbook-intelligence/templates.js'
 ];
 
 self.addEventListener('install', (e) => {

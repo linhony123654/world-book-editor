@@ -670,3 +670,84 @@ button.switch:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* ===== 弹窗打开动画（关闭为瞬时，避免动 display 时序） ===== */
+.modal.open { animation: wbe-modal-in .22s ease; }
+@keyframes wbe-modal-in { from { background: rgba(0,0,0,0); } to { background: rgba(0,0,0,.48); } }
+.modal .sheet { animation: wbe-sheet-in .26s cubic-bezier(.2,.75,.25,1); }
+@keyframes wbe-sheet-in { from { transform: translateY(28px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ===== 聊天消息进入动画 ===== */
+.chat-msg { animation: wbe-msg-in .2s ease both; }
+@keyframes wbe-msg-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ===== 主题切换过渡（只对大面积元素，避免全元素 transition 拖慢交互） ===== */
+body, .app, .screen, .sheet, .cover, .masthead-bar, .bottom-nav, .setting,
+.editor-title, .body-editor textarea, .chat-input,
+.field input, .field textarea, .field select {
+  transition: background-color .28s ease, color .28s ease, border-color .28s ease;
+}
+
+/* ===== 条目卡片首次渲染 stagger（JS 标记 .stagger 后生效；筛选/搜索重建不再动画） ===== */
+.feature.stagger { animation: wbe-card-in .3s ease both; }
+.stagger .entry-card { animation: wbe-card-in .3s ease both; }
+.stagger .entry-card:nth-child(1) { animation-delay: .04s; }
+.stagger .entry-card:nth-child(2) { animation-delay: .09s; }
+.stagger .entry-card:nth-child(3) { animation-delay: .14s; }
+.stagger .entry-card:nth-child(4) { animation-delay: .19s; }
+.stagger .index-row { animation: wbe-card-in .3s ease both; }
+.stagger .index-row:nth-child(1) { animation-delay: .08s; }
+.stagger .index-row:nth-child(2) { animation-delay: .11s; }
+.stagger .index-row:nth-child(3) { animation-delay: .14s; }
+.stagger .index-row:nth-child(4) { animation-delay: .17s; }
+.stagger .index-row:nth-child(5) { animation-delay: .2s; }
+.stagger .index-row:nth-child(6) { animation-delay: .23s; }
+.stagger .index-row:nth-child(7) { animation-delay: .26s; }
+.stagger .index-row:nth-child(8) { animation-delay: .29s; }
+.stagger .index-row:nth-child(9) { animation-delay: .32s; }
+.stagger .index-row:nth-child(10) { animation-delay: .35s; }
+@keyframes wbe-card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ===== 搜索高亮 ===== */
+mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inherit; padding: 0 1px; border-radius: 2px; }
+
+/* ===== 语义类型筛选（与 .category 同一行的小下拉） ===== */
+.category-select {
+  border: 0; border-bottom: 1px solid var(--line); background: transparent;
+  color: var(--ink); font-size: 9px; font-weight: 750; letter-spacing: .12em;
+  text-transform: uppercase; padding: 6px 0; outline: 0;
+  -webkit-appearance: none; appearance: none; cursor: pointer; max-width: 130px;
+}
+
+/* ===== 全书统计行 ===== */
+.stats-row { display: flex; gap: 14px; padding: 12px 20px 0; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; flex-wrap: wrap; }
+.stats-row .stat strong { color: var(--wine); font-family: Georgia, "Times New Roman", serif; font-size: 12px; letter-spacing: 0; margin-left: 3px; }
+
+/* ===== 批量选择模式 ===== */
+.batch-bar { display: none; padding: 10px 20px 0; align-items: center; gap: 8px; flex-wrap: wrap; }
+.batch-bar.on { display: flex; }
+.batch-count { flex: 1; color: var(--wine); font-size: 9px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; min-width: 72px; }
+.batch-btn { border: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 9px; font-weight: 750; letter-spacing: .1em; padding: 7px 10px; cursor: pointer; transition: .15s ease; }
+.batch-btn:hover, .batch-btn:focus-visible { border-color: var(--ink); }
+.batch-btn.danger:hover, .batch-btn.danger:focus-visible { border-color: var(--danger); color: var(--danger); }
+.batch-btn.primary { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.entry-card.selected, .index-row.selected, .feature.selected {
+  outline: 1px solid var(--wine); outline-offset: -1px;
+  background: color-mix(in srgb, var(--wine) 7%, transparent);
+}
+#selectModeBtn.on { color: var(--wine); border-color: var(--wine); }
+
+/* ===== 会话消息编辑/删除按钮 ===== */
+.chat-msg { position: relative; }
+.chat-msg-actions { display: flex; gap: 8px; margin-top: 2px; opacity: 0; transition: opacity .15s ease; }
+.chat-msg:hover .chat-msg-actions, .chat-msg:focus-within .chat-msg-actions { opacity: 1; }
+@media (pointer: coarse) { .chat-msg-actions { opacity: 1; } }
+.chat-msg-act { border: 0; background: transparent; color: var(--muted); font-size: 10px; padding: 2px 4px; cursor: pointer; }
+.chat-msg-act:hover, .chat-msg-act:focus-visible { color: var(--wine); }
+.chat-msg-editing .chat-msg-edit-textarea { width: 100%; min-height: 60px; border: 1px solid var(--line); background: var(--paper-3); color: var(--ink); padding: 8px 10px; font-size: 13px; outline: 0; resize: vertical; font-family: inherit; }
+.chat-msg-edit-actions { display: flex; gap: 8px; margin-top: 6px; }
+.chat-msg-edit-actions .action { font-size: 9px; padding: 6px 10px; }
+
+/* ===== 批量选择入口按钮（toolbar 右侧） ===== */
+.search-actions { display: flex; justify-content: flex-end; padding-top: 12px; }
+.search-actions .icon-btn { border: 1px solid var(--line); }
