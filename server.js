@@ -30,9 +30,17 @@ app.use((req, res, next) => {
 });
 
 // 只暴露 public/ 下的前端文件；数据库/源码/依赖目录一律不可访问
+// 缓存策略：index.html 与 ES 模块每次重新验证（no-cache + ETag，304 无 body 几乎零成本，部署立即可见）；
+// 其余资源（app.js / style.css 等带 ?v= 版本号）缓存 1 小时
 app.use(express.static(path.join(__dirname, 'public'), {
-  maxAge: 0,
-  setHeaders: (res) => res.set('Cache-Control', 'no-store')
+  etag: true,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('index.html') || filePath.includes(path.sep + 'modules' + path.sep)) {
+      res.set('Cache-Control', 'no-cache');
+    } else {
+      res.set('Cache-Control', 'public, max-age=3600');
+    }
+  }
 }));
 
 // ===== SQLite =====
@@ -58,6 +66,13 @@ db.exec(`
     user_id INTEGER NOT NULL,
     created_at TEXT DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS ai_data (
+    book_id INTEGER PRIMARY KEY,
+    memory TEXT,
+    sessions TEXT,
+    active_session TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
   )
 `);
 
@@ -164,7 +179,39 @@ app.post('/api/change-password', authRequired, (req, res) => {
 });
 
 // 数据 API 全部需要登录
-app.use(['/api/books', '/api/proxy', '/api/test-tool'], authRequired);
+app.use(['/api/books', '/api/proxy', '/api/test-tool', '/api/ai-data'], authRequired);
+
+// ===== AI 会话与记忆持久化（按世界书，替代 localStorage） =====
+app.get('/api/ai-data/:bookId', (req, res) => {
+  if (!/^\d+$/.test(req.params.bookId)) return res.json({ memory: null, sessions: null, activeSession: null });
+  const row = db.prepare('SELECT memory, sessions, active_session FROM ai_data WHERE book_id = ?').get(Number(req.params.bookId));
+  if (!row) return res.json({ memory: null, sessions: null, activeSession: null });
+  const parse = s => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+  res.json({ memory: parse(row.memory), sessions: parse(row.sessions), activeSession: row.active_session || null });
+});
+
+app.put('/api/ai-data/:bookId', (req, res) => {
+  if (!/^\d+$/.test(req.params.bookId)) return res.status(400).json({ error: 'invalid bookId' });
+  const bookId = Number(req.params.bookId);
+  const body = req.body || {};
+  const kv = [];
+  const vals = [];
+  if (Object.prototype.hasOwnProperty.call(body, 'memory')) {
+    kv.push('memory'); vals.push(body.memory == null ? null : JSON.stringify(body.memory));
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'sessions')) {
+    kv.push('sessions'); vals.push(body.sessions == null ? null : JSON.stringify(body.sessions));
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'activeSession')) {
+    kv.push('active_session'); vals.push(body.activeSession == null ? null : String(body.activeSession));
+  }
+  if (!kv.length) return res.status(400).json({ error: 'no fields' });
+  kv.push('updated_at');
+  const ph = kv.map(k => k === 'updated_at' ? "datetime('now')" : '?');
+  const upd = kv.map(k => k === 'updated_at' ? 'updated_at = excluded.updated_at' : k + ' = excluded.' + k).join(', ');
+  db.prepare(`INSERT INTO ai_data (book_id, ${kv.join(', ')}) VALUES (?, ${ph.join(', ')}) ON CONFLICT(book_id) DO UPDATE SET ${upd}`).run(bookId, ...vals);
+  res.json({ ok: true });
+});
 
 // ===== API: 列出所有世界书 =====
 app.get('/api/books', (req, res) => {
@@ -204,10 +251,23 @@ app.put('/api/books/:id', (req, res) => {
   res.json({ ok: true, entry_count: entryCount });
 });
 
-// ===== API: 删除世界书 =====
+// ===== API: 删除世界书（删除前自动备份到 backups/deleted/，防止误删） =====
 app.delete('/api/books/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM world_books WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  const row = db.prepare('SELECT id, name, data FROM world_books WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'not found' });
+  try {
+    const dir = path.join(__dirname, 'backups', 'deleted');
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeName = String(row.name || 'book').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60);
+    fs.writeFileSync(path.join(dir, ts + '-' + row.id + '-' + safeName + '.json'), row.data);
+    // 保留最近 20 份删除备份（文件名时间戳前缀，字典序即时间序）
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
+    while (files.length > 20) fs.unlinkSync(path.join(dir, files.shift()));
+  } catch (e) {
+    console.error('[WBE] 删除备份失败:', e.message);
+  }
+  db.prepare('DELETE FROM world_books WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 

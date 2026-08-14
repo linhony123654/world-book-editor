@@ -139,7 +139,7 @@ export function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   // 自动保存关闭时只标记为「未保存」，等用户手动点保存
   if (localStorage.getItem('wbe-autosave') === 'off') return;
-  setSaveTimer(setTimeout(autoSave, 1500));
+  setSaveTimer(setTimeout(autoSave, 3000));
 }
 
 export async function autoSave() {

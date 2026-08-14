@@ -47,6 +47,31 @@ const ROLLUP_EVERY = 10;  // 每满 N 条小总结整合一次
 function memKey(bookId) { return 'wbe-memory:' + (bookId || 'unsaved'); }
 function emptyMemory() { return { turns: [], rollups: [], rolledUpCount: 0 }; }
 
+// ===== 会话/记忆持久化：后端 SQLite（容量不受 localStorage 限制），localStorage 仅作一次性迁移源 =====
+// 写操作串行入队，避免并发 PUT 互相覆盖；失败只告警不阻断（下次保存会重写全量）
+let persistQueue = Promise.resolve();
+function persistPut(bookId, payload) {
+  persistQueue = persistQueue.then(async () => {
+    try {
+      const { authHeaders } = await import('./auth.js');
+      await fetch('/api/ai-data/' + bookId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(payload)
+      });
+    } catch (e) {
+      console.warn('[WBE] 持久化失败（book ' + bookId + '）:', e.message);
+    }
+  });
+  return persistQueue;
+}
+async function persistFetch(bookId) {
+  const { authHeaders } = await import('./auth.js');
+  const r = await fetch('/api/ai-data/' + bookId, { headers: authHeaders() });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
 // 把损坏的本地数据备份到 wbe-corrupt-backup，避免坏数据被静默重置丢失
 function backupCorruptData(key, raw) {
   try {
@@ -63,17 +88,32 @@ function backupCorruptData(key, raw) {
   }
 }
 
-function loadMemory(bookId) {
+async function loadMemory(bookId) {
+  let m = null;
   try {
-    const raw = localStorage.getItem(memKey(bookId));
-    const m = raw ? JSON.parse(raw) : null;
-    memory = m ? { turns: m.turns || [], rollups: m.rollups || [], rolledUpCount: m.rolledUpCount || 0 } : emptyMemory();
+    const data = await persistFetch(bookId);
+    m = data && data.memory;
   } catch (e) {
-    console.warn('[WBE] 记忆数据损坏，已重置:', memKey(bookId), e);
-    backupCorruptData(memKey(bookId), localStorage.getItem(memKey(bookId)));
-    memory = emptyMemory();
-    import('./utils.js').then(m => m.showToast('本书记忆数据损坏，已备份并重置', 'error'));
+    console.warn('[WBE] 记忆加载失败:', e.message);
   }
+  if (!m) {
+    // 一次性迁移：localStorage 旧数据 → 上传后端后删除
+    const key = memKey(bookId);
+    let raw = null;
+    try {
+      raw = localStorage.getItem(key);
+      if (raw) {
+        const local = JSON.parse(raw);
+        if (local && (local.turns || local.rollups)) { m = local; persistPut(bookId, { memory: m }); }
+      }
+    } catch (e) {
+      console.warn('[WBE] 记忆数据损坏，已重置:', key, e);
+      backupCorruptData(key, raw);
+      import('./utils.js').then(m => m.showToast('本书记忆数据损坏，已备份并重置', 'error'));
+    }
+    try { localStorage.removeItem(key); } catch {}
+  }
+  memory = m ? { turns: m.turns || [], rollups: m.rollups || [], rolledUpCount: m.rolledUpCount || 0 } : emptyMemory();
   updateMemoryBadge();
 }
 function saveMemory() {
@@ -92,10 +132,10 @@ function saveMemory() {
       }
     }
     if (memory.rollups.length > MAX_MEMORY_ROLLUPS) memory.rollups = memory.rollups.slice(-MAX_MEMORY_ROLLUPS);
-    localStorage.setItem(memKey(logBookId), JSON.stringify(memory));
+    persistPut(logBookId, { memory });
   } catch (e) {
     console.warn('[WBE] 记忆保存失败:', e);
-    import('./utils.js').then(m => m.showToast('记忆保存失败（本地存储可能已满）', 'error'));
+    import('./utils.js').then(m => m.showToast('记忆保存失败', 'error'));
   }
 }
 function recentTurns() { return memory.turns.slice(memory.rolledUpCount); }
@@ -120,37 +160,60 @@ function titleFromMessages(msgs) {
   return t.length > 14 ? t.slice(0, 14) + '…' : (t || '新对话');
 }
 
-function loadChatHistory(bookId) {
+async function loadChatHistory(bookId) {
+  let data = null;
   try {
-    const raw = localStorage.getItem(sessionsKey(bookId));
-    let list = raw ? JSON.parse(raw) : null;
-    if (!Array.isArray(list)) {
+    data = await persistFetch(bookId);
+  } catch (e) {
+    console.warn('[WBE] 会话历史加载失败:', e.message);
+  }
+  let list = data && Array.isArray(data.sessions) ? data.sessions : null;
+  let activeId = data ? data.activeSession : null;
+  if (!list) {
+    // 一次性迁移：localStorage 旧数据 → 上传后端后删除
+    const key = sessionsKey(bookId);
+    let raw = null;
+    try { raw = localStorage.getItem(key); } catch {}
+    let local = null;
+    try { local = raw ? JSON.parse(raw) : null; } catch (e) {
+      console.warn('[WBE] 会话历史数据损坏，已重置:', key, e);
+      backupCorruptData(key, raw);
+      import('./utils.js').then(m => m.showToast('会话历史数据损坏，已备份并重置', 'error'));
+    }
+    if (!Array.isArray(local)) {
       // 迁移旧版单会话历史 wbe-chat:<bookId>
-      const oldRaw = localStorage.getItem('wbe-chat:' + (bookId || 'unsaved'));
-      const old = oldRaw ? JSON.parse(oldRaw) : [];
-      list = [];
+      let old = [];
+      try {
+        const oldRaw = localStorage.getItem('wbe-chat:' + (bookId || 'unsaved'));
+        if (oldRaw) old = JSON.parse(oldRaw);
+      } catch (e) { console.warn('[WBE] 旧版会话历史损坏，跳过迁移:', e.message); }
+      local = [];
       if (Array.isArray(old) && old.length) {
         const s = makeSession();
         s.messages = old;
         s.title = titleFromMessages(old);
-        list.push(s);
-      }
-      localStorage.setItem(sessionsKey(bookId), JSON.stringify(list));
-    }
-    sessions = list.filter(s => s && Array.isArray(s.messages));
-    const activeId = localStorage.getItem(activeKey(bookId));
-    const target = sessions.find(s => s.id === activeId) || sessions[sessions.length - 1] || null;
-    activeSessionId = target ? target.id : null;
-    chatMessages.length = 0;
-    if (target) {
-      for (const m of target.messages) {
-        if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') chatMessages.push({ role: m.role, content: m.content });
+        local.push(s);
       }
     }
-  } catch (e) {
-    console.warn('[WBE] 会话历史数据损坏，已重置:', sessionsKey(bookId), e);
-    backupCorruptData(sessionsKey(bookId), localStorage.getItem(sessionsKey(bookId)));
-    sessions = []; activeSessionId = null; chatMessages.length = 0;
+    if (local.length) {
+      list = local;
+      activeId = localStorage.getItem(activeKey(bookId)) || null;
+      persistPut(bookId, { sessions: list, activeSession: activeId });
+    }
+    try {
+      localStorage.removeItem(key);
+      localStorage.removeItem(activeKey(bookId));
+      localStorage.removeItem('wbe-chat:' + (bookId || 'unsaved'));
+    } catch {}
+  }
+  sessions = (list || []).filter(s => s && Array.isArray(s.messages));
+  const target = sessions.find(s => s.id === activeId) || sessions[sessions.length - 1] || null;
+  activeSessionId = target ? target.id : null;
+  chatMessages.length = 0;
+  if (target) {
+    for (const m of target.messages) {
+      if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') chatMessages.push({ role: m.role, content: m.content });
+    }
   }
 }
 
@@ -172,11 +235,10 @@ function saveChatHistory() {
       if (active) sessions.push(active);
       sessions.push(...others);
     }
-    localStorage.setItem(sessionsKey(logBookId), JSON.stringify(sessions));
-    localStorage.setItem(activeKey(logBookId), activeSessionId || '');
+    persistPut(logBookId, { sessions, activeSession: activeSessionId });
   } catch (e) {
     console.warn('[WBE] 会话历史保存失败:', e);
-    import('./utils.js').then(m => m.showToast('会话保存失败（本地存储可能已满）', 'error'));
+    import('./utils.js').then(m => m.showToast('会话保存失败', 'error'));
   }
 }
 
@@ -493,10 +555,9 @@ function buildMemoryInjection() {
 }
 
 // 确保当前 memory 与 currentBookId 对应（换书/刷新后用）。currentBookId 是 live binding。
-export function ensureMemoryLoaded() {
+export async function ensureMemoryLoaded() {
   if (currentBookId !== logBookId) {
-    loadMemory(currentBookId);
-    loadChatHistory(currentBookId);
+    await Promise.all([loadMemory(currentBookId), loadChatHistory(currentBookId)]);
     renderChatHistory();
     logBookId = currentBookId;
   }
@@ -517,8 +578,8 @@ function setMemTab(tab) {
   if (sheet) sheet.scrollTop = 0;
 }
 
-function openMemoryModal() {
-  ensureMemoryLoaded();
+async function openMemoryModal() {
+  await ensureMemoryLoaded(); // 等书数据同步完再渲染弹窗，避免显示旧会话/记忆
   setMemTab(memTabState);
   const m = $('memoryModal');
   if (m) m.classList.add('open');
@@ -613,7 +674,10 @@ export function initChat() {
   const $chatInput = $('chat-input');
   const $clear = $('chatClearBtn');
 
-  if ($btnSendChat) $btnSendChat.addEventListener('click', () => sendChat());
+  if ($btnSendChat) $btnSendChat.addEventListener('click', () => {
+    if (isSending) { abortActiveChat('user'); return; } // 生成中点击 → 停止
+    sendChat();
+  });
 
   // 滚动跟随 + 「回到底部」浮钮（滚动容器是 .app）
   const scroller = getChatScroller();
@@ -645,18 +709,18 @@ export function initChat() {
   if ($clearMem) $clearMem.addEventListener('click', () => {
     ensureMemoryLoaded();
     memory = emptyMemory();
-    try { localStorage.removeItem(memKey(logBookId)); } catch {}
+    persistPut(logBookId, { memory: null });
     updateMemoryBadge();
     renderMemoryList();
     import('./utils.js').then(m => m.showToast('已清空本书记忆', 'success'));
   });
-  // 启动时加载当前书的记忆
-  loadMemory(currentBookId);
-  logBookId = currentBookId;
-  updateMemoryBadge();
-  // 启动时恢复当前书的对话历史（刷新/重开后继续）
-  loadChatHistory(currentBookId);
-  renderChatHistory();
+  // 启动时加载当前书的记忆/会话（书未加载时跳过，由 bootApp 的 ensureMemoryLoaded 统一加载）
+  if (currentBookId != null) {
+    loadMemory(currentBookId);
+    logBookId = currentBookId;
+    loadChatHistory(currentBookId).then(() => renderChatHistory());
+    updateMemoryBadge();
+  }
 
   // 多会话：记忆弹窗 Sessions 标签（会话栏已移除，入口为右上角记忆按钮）
   const $sessionNewBtn = $('sessionNewBtn');
@@ -989,8 +1053,9 @@ function setSendBusy(busy) {
   const btn = $('btn-send-chat');
   if (btn) {
     btn.classList.toggle('is-busy', busy);
-    btn.disabled = busy;
-    btn.setAttribute('aria-label', busy ? '发送中…' : '发送');
+    // 忙碌时按钮变为「停止」：保持可点击，点击即中断生成（spinner 图标复用现有样式）
+    btn.disabled = false;
+    btn.setAttribute('aria-label', busy ? '停止生成' : '发送');
   }
   const input = $('chat-input');
   if (input) input.classList.toggle('sending', busy);
@@ -1042,7 +1107,15 @@ async function sendChat(prevText) {
   }
 
   // 换世界书时切换到对应书的记忆（不同书的记忆互不相关，持久化各存各的）
-  ensureMemoryLoaded();
+  await ensureMemoryLoaded();
+
+  // 没有活动会话时自动创建一个：保证首条消息就进入持久化会话，刷新后不丢
+  if (!sessions.some(s => s.id === activeSessionId)) {
+    const s = makeSession();
+    sessions.push(s);
+    activeSessionId = s.id;
+    saveChatHistory();
+  }
 
   if (prevText == null) {
     appendChatMessage('user', text);
@@ -1177,6 +1250,9 @@ async function sendChat(prevText) {
       if (reason === 'switch') {
         // 切换会话/清空对话主动中断：不污染新会话，只轻提示
         import('./utils.js').then(m => m.showToast('已停止当前回复', 'info'));
+      } else if (reason === 'user') {
+        // 用户手动点「停止」中断
+        import('./utils.js').then(m => m.showToast('已停止生成', 'info'));
       } else {
         import('./utils.js').then(m => m.showToast('请求超时，已自动停止', 'error'));
         if (turnStillActive(sessionIdAtStart, bookIdAtStart)) appendChatMessage('error', '请求超时，已自动停止。');

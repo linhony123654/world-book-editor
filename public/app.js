@@ -110,7 +110,7 @@ async function bootApp() {
   const books = await loadBookList();
   if (books.length > 0) {
     await loadBook(chooseInitialBookId(books), renderSidebar, onSelectEntry, renderEditorEmpty);
-    ensureMemoryLoaded(); // 书加载后同步本书记忆（角标/注入/清空都对得上）
+    await ensureMemoryLoaded(); // 书加载后同步本书记忆（角标/注入/清空都对得上）
   } else {
     renderEditorEmpty();
   }
@@ -296,7 +296,7 @@ function bindSettings() {
     const books = await loadBookList();
     const cur = (await import('./modules/state.js')).currentBookId;
     const target = books.find(b => b.id === cur) || books[0];
-    if (target) { await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty); ensureMemoryLoaded(); }
+    if (target) { await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty); await ensureMemoryLoaded(); }
     else showToast('没有可加载的世界书', 'error');
   });
   $('openApiBtn') && $('openApiBtn').addEventListener('click', openApiModal);

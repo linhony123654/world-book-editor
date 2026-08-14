@@ -498,8 +498,8 @@ svg { display: block; }
 .chat-input:focus { border-color: var(--ink); }
 .chat-send { width: 44px; height: 44px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper); display: grid; place-items: center; cursor: pointer; transition: transform .12s ease, opacity .12s ease; }
 .chat-send:active { transform: scale(.9); }
-/* 发送中：旋转 spinner + 禁用 */
-.chat-send.is-busy { cursor: default; transform: none; }
+/* 生成中：spinner + 可点击（点击即停止） */
+.chat-send.is-busy { cursor: pointer; transform: none; }
 .chat-send.is-busy .icon { display: none; }
 .chat-send.is-busy::after {
   content: '';

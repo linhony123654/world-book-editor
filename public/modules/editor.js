@@ -16,10 +16,14 @@ export function renderEditorEmpty() {
   if (s) s.hidden = true;
 }
 
+// 标题输入时延迟重建侧栏，避免每键全量 innerHTML 重建 Library 屏（大书时卡顿）
+let titleSidebarTimer = null;
+
 // ===== 渲染编辑器 =====
 export function renderEditor(entry) {
   const d = dyn();
   if (!d) return;
+  if (titleSidebarTimer) { clearTimeout(titleSidebarTimer); titleSidebarTimer = null; } // 切条目时取消残留的防抖
 
   const title = entry.comment || '';
   const content = entry.content || '';
@@ -223,7 +227,11 @@ function bindEditorEvents(entry) {
     title.addEventListener('input', () => {
       entry.comment = title.value;
       autoSizeTitle();
-      renderSidebar();
+      if (titleSidebarTimer) clearTimeout(titleSidebarTimer);
+      titleSidebarTimer = setTimeout(() => {
+        titleSidebarTimer = null;
+        renderSidebar();
+      }, 200);
       scheduleSave();
     });
   }
