@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="style.css?v=mag6" />
+  <link rel="stylesheet" href="style.css?v=mag7" />
 </head>
 <body>
   <main class="app">
@@ -443,7 +443,7 @@
         </div>
       </div>
       <div id="tab-memory" hidden>
-        <p class="memory-note"><strong id="memBookName">本书</strong>的分层记忆：每个回合自动留一条小总结（做了什么 + 工具浓缩），每 10 回合 AI 把它们整合成一段「阶段总结」。整本注入到上下文，帮它记住前情、避免重复查询。按书持久化，刷新/换书都在；点「清空记忆」可重置（与「清空对话」相互独立）。</p>
+        <p class="memory-note"><strong id="memBookName">本书</strong>的分层记忆：每个回合自动留一条小总结（做了什么 + 工具浓缩），每 10 回合 AI 把它们整合成一段「阶段总结」。注入到当前会话的上下文，帮它记住前情、避免重复查询。<strong>记忆与会话绑定</strong>——每个会话独立记忆，切换会话互不干扰，刷新/换书都在；点「清空记忆」只清当前会话（与「清空对话」相互独立）。</p>
         <input class="mem-search" id="memorySearchInput" type="search" placeholder="搜索记忆内容…" autocomplete="off" aria-label="搜索记忆" />
         <div class="memory-list" id="memoryList"></div>
         <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
@@ -557,7 +557,7 @@
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 
-  <script type="module" src="app.js?v=mag6"></script>
+  <script type="module" src="app.js?v=mag7"></script>
   <script>
     // PWA: Service Worker 注册（仅 HTTPS/localhost 安全上下文生效）
     if ('serviceWorker' in navigator) {

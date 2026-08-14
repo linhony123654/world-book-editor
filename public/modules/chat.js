@@ -88,34 +88,6 @@ function backupCorruptData(key, raw) {
   }
 }
 
-async function loadMemory(bookId) {
-  let m = null;
-  try {
-    const data = await persistFetch(bookId);
-    m = data && data.memory;
-  } catch (e) {
-    console.warn('[WBE] 记忆加载失败:', e.message);
-  }
-  if (!m) {
-    // 一次性迁移：localStorage 旧数据 → 上传后端后删除
-    const key = memKey(bookId);
-    let raw = null;
-    try {
-      raw = localStorage.getItem(key);
-      if (raw) {
-        const local = JSON.parse(raw);
-        if (local && (local.turns || local.rollups)) { m = local; persistPut(bookId, { memory: m }); }
-      }
-    } catch (e) {
-      console.warn('[WBE] 记忆数据损坏，已重置:', key, e);
-      backupCorruptData(key, raw);
-      import('./utils.js').then(m => m.showToast('本书记忆数据损坏，已备份并重置', 'error'));
-    }
-    try { localStorage.removeItem(key); } catch {}
-  }
-  memory = m ? { turns: m.turns || [], rollups: m.rollups || [], rolledUpCount: m.rolledUpCount || 0 } : emptyMemory();
-  updateMemoryBadge();
-}
 function saveMemory() {
   try {
     // 上限控制：超出丢弃最旧的；优先丢弃已被大总结覆盖的最旧部分，保持 rolledUpCount 语义
@@ -132,7 +104,10 @@ function saveMemory() {
       }
     }
     if (memory.rollups.length > MAX_MEMORY_ROLLUPS) memory.rollups = memory.rollups.slice(-MAX_MEMORY_ROLLUPS);
-    persistPut(logBookId, { memory });
+    // 会话级记忆：写入当前会话对象，随会话一起持久化
+    const cur = sessions.find(s => s.id === activeSessionId);
+    if (cur) cur.memory = memory;
+    persistPut(logBookId, { sessions });
   } catch (e) {
     console.warn('[WBE] 记忆保存失败:', e);
     import('./utils.js').then(m => m.showToast('记忆保存失败', 'error'));
@@ -150,7 +125,7 @@ let sessions = [];          // 当前书的会话列表
 let activeSessionId = null; // 活动会话 id
 
 function makeSession() {
-  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now(), aiTitled: false };
+  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now(), aiTitled: false, memory: emptyMemory() };
 }
 
 function titleFromMessages(msgs) {
@@ -214,7 +189,41 @@ async function loadChatHistory(bookId) {
     for (const m of target.messages) {
       if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') chatMessages.push({ role: m.role, content: m.content });
     }
+    // 会话级记忆：若该会话还没有记忆，迁移旧的「书级记忆」（后端 ai_data / localStorage）到该会话
+    if (!target.memory) {
+      target.memory = await migrateLegacyMemory(bookId);
+    }
+    memory = normalizeMemory(target.memory);
+  } else {
+    memory = emptyMemory();
   }
+  updateMemoryBadge();
+}
+
+// 记忆归一：容忍缺字段/旧结构
+function normalizeMemory(m) {
+  return { turns: (m && m.turns) || [], rollups: (m && m.rollups) || [], rolledUpCount: (m && m.rolledUpCount) || 0 };
+}
+
+// 旧书级记忆一次性迁移：后端 ai_data.memory 或 localStorage wbe-memory:<bookId> → 当前会话
+async function migrateLegacyMemory(bookId) {
+  try {
+    const data = await persistFetch(bookId);
+    if (data && data.memory) {
+      persistPut(bookId, { memory: null }); // 迁移后清空后端书级记忆
+      return normalizeMemory(data.memory);
+    }
+  } catch (e) { console.warn('[WBE] 书级记忆迁移(后端)失败:', e.message); }
+  try {
+    const key = memKey(bookId);
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const m = JSON.parse(raw);
+      localStorage.removeItem(key);
+      if (m && (m.turns || m.rollups)) return normalizeMemory(m);
+    }
+  } catch (e) { console.warn('[WBE] 书级记忆迁移(localStorage)失败:', e.message); }
+  return emptyMemory();
 }
 
 function saveChatHistory() {
@@ -266,6 +275,9 @@ function switchSession(id) {
   activeSessionId = id;
   chatMessages.length = 0;
   for (const m of s.messages) chatMessages.push(m);
+  // 记忆与会话绑定：切换时载入该会话的记忆
+  memory = normalizeMemory(s.memory);
+  updateMemoryBadge();
   saveChatHistory();
   renderChatHistory();
   closeSessionList();
@@ -278,6 +290,8 @@ function newSession() {
   sessions.push(s);
   activeSessionId = s.id;
   chatMessages.length = 0;
+  memory = emptyMemory(); // 新会话从零记忆开始
+  updateMemoryBadge();
   saveChatHistory();
   renderChatHistory();
   closeSessionList();
@@ -295,6 +309,8 @@ function deleteSession(id) {
     activeSessionId = next ? next.id : null;
     chatMessages.length = 0;
     if (next) for (const m of next.messages) chatMessages.push(m);
+    memory = next ? normalizeMemory(next.memory) : emptyMemory(); // 同步到新会话记忆
+    updateMemoryBadge();
   }
   saveChatHistory();
   renderChatHistory();
@@ -577,9 +593,10 @@ function buildMemoryInjection(maxChars = MEMORY_INJECTION_MAX) {
 }
 
 // 确保当前 memory 与 currentBookId 对应（换书/刷新后用）。currentBookId 是 live binding。
+// 记忆挂在会话对象上，loadChatHistory 内部同步 memory。
 export async function ensureMemoryLoaded() {
   if (currentBookId !== logBookId) {
-    await Promise.all([loadMemory(currentBookId), loadChatHistory(currentBookId)]);
+    await loadChatHistory(currentBookId);
     renderChatHistory();
     logBookId = currentBookId;
   }
@@ -741,14 +758,15 @@ export function initChat() {
   if ($clearMem) $clearMem.addEventListener('click', () => {
     ensureMemoryLoaded();
     memory = emptyMemory();
-    persistPut(logBookId, { memory: null });
+    const cur = sessions.find(s => s.id === activeSessionId);
+    if (cur) cur.memory = emptyMemory();
+    persistPut(logBookId, { sessions });
     updateMemoryBadge();
     renderMemoryList();
-    import('./utils.js').then(m => m.showToast('已清空本书记忆', 'success'));
+    import('./utils.js').then(m => m.showToast('已清空当前会话的记忆', 'success'));
   });
   // 启动时加载当前书的记忆/会话（书未加载时跳过，由 bootApp 的 ensureMemoryLoaded 统一加载）
   if (currentBookId != null) {
-    loadMemory(currentBookId);
     logBookId = currentBookId;
     loadChatHistory(currentBookId).then(() => renderChatHistory());
     updateMemoryBadge();
