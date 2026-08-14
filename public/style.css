@@ -751,8 +751,17 @@ mark { background: color-mix(in srgb, var(--wine) 20%, transparent); color: inhe
 }
 .chat-token-pill.over { background: var(--danger); border-color: var(--danger); color: var(--paper); opacity: 1; }
 .chat-msg-editing .chat-msg-edit-textarea { width: 100%; min-height: 60px; border: 1px solid var(--line); background: var(--paper-3); color: var(--ink); padding: 8px 10px; font-size: 13px; outline: 0; resize: vertical; font-family: inherit; }
-.chat-msg-edit-actions { display: flex; gap: 8px; margin-top: 6px; }
-.chat-msg-edit-actions .action { font-size: 9px; padding: 6px 10px; }
+.chat-msg-editing .chat-msg-edit-textarea:focus { border-color: var(--wine); }
+.chat-msg-edit-actions { display: flex; gap: 6px; margin-top: 6px; }
+/* 取消/保存：小胶囊，覆盖 .action 的大黑样式，与消息操作行统一 */
+.chat-msg-edit-actions .action {
+  height: auto; padding: 4px 12px;
+  border-radius: 999px; font-size: 8px; font-weight: 700; letter-spacing: .08em;
+  border: 1px solid var(--line); background: transparent; color: var(--faint);
+  opacity: .85; transition: .15s ease;
+}
+.chat-msg-edit-actions .action:hover, .chat-msg-edit-actions .action:focus-visible { opacity: 1; color: var(--wine); border-color: var(--wine); }
+.chat-msg-edit-actions .action.primary { border-color: var(--wine); background: var(--wine); color: var(--paper); opacity: 1; }
 
 /* ===== 批量选择入口按钮（toolbar 右侧） ===== */
 .search-actions { display: flex; justify-content: flex-end; padding-top: 12px; }
