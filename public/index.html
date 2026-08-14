@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="style.css?v=mag9" />
+  <link rel="stylesheet" href="style.css?v=mag10" />
 </head>
 <body>
   <main class="app">
@@ -274,7 +274,13 @@
       <div class="settings-page">
         <div class="issue-row"><span>Configuration</span><span>Edition 01</span></div>
         <h2>Preferences</h2>
+        <div class="tabs settings-tabs">
+          <button class="tab active" data-settab="pref">偏好</button>
+          <button class="tab" data-settab="ai">AI 助手</button>
+          <button class="tab" data-settab="data">数据与同步</button>
+        </div>
 
+        <div class="settings-pane" data-pane="pref">
         <div class="settings-group">
           <div class="setting">
             <div>
@@ -295,7 +301,9 @@
             <input class="setting-number" id="chatVisibleLimitInput" type="number" min="0" max="200" step="1" inputmode="numeric" aria-label="会话显示条数" />
           </div>
         </div>
+        </div>
 
+        <div class="settings-pane" data-pane="ai" hidden>
         <div class="settings-group">
           <div class="setting" id="apiConfigRow">
             <div style="min-width:0;flex:1">
@@ -316,6 +324,11 @@
               <button class="action primary" id="importConfigKeyBtn">导入</button>
             </div>
           </div>
+        </div>
+        </div>
+
+        <div class="settings-pane" data-pane="data" hidden>
+        <div class="settings-group">
           <div class="setting">
             <div><strong>导入世界书</strong><small>SillyTavern Lorebook JSON</small></div>
             <button class="action" id="importBtn" style="width:82px;">Import</button>
@@ -367,6 +380,7 @@
             </div>
             <small class="cloud-status" id="cloudStatus"></small>
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -645,7 +659,7 @@
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 
-  <script type="module" src="app.js?v=mag9"></script>
+  <script type="module" src="app.js?v=mag10"></script>
   <script>
     // PWA: Service Worker 注册（仅 HTTPS/localhost 安全上下文生效）
     if ('serviceWorker' in navigator) {

@@ -69,7 +69,7 @@ function setScreen(name) {
   if (app) app.scrollTop = name === 'chat' ? app.scrollHeight : 0;
   else window.scrollTo(0, 0);
   if (name === 'archives') renderArchives();
-  if (name === 'settings') refreshSettings();
+  if (name === 'settings') { refreshSettings(); setSettab('pref'); }
   if (name === 'me') fillProfile();
   if (name === 'editor') autoSizeTitle(); // 隐藏时渲染过标题，切回来重算高度
 }
@@ -113,6 +113,7 @@ async function bootApp() {
   bindNav();
   bindEntryActions();
   bindSettings();
+  bindSettabs();
   bindApiModal();
   bindModalClose();
   bindUndo();
@@ -262,6 +263,17 @@ function onCreateEntry() {
   newEntry(title);
   closeModal($('entryModal'));
   setScreen('editor');
+}
+
+// ===== 设置页顶部标签（偏好 / AI 助手 / 数据与同步） =====
+function setSettab(tab) {
+  document.querySelectorAll('.settings-tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.settab === tab));
+  document.querySelectorAll('.settings-pane').forEach(p => { p.hidden = p.dataset.pane !== tab; });
+}
+function bindSettabs() {
+  document.querySelectorAll('.settings-tabs .tab').forEach(btn => {
+    btn.addEventListener('click', () => setSettab(btn.dataset.settab));
+  });
 }
 
 // ===== 设置项绑定 =====
