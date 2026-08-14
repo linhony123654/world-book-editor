@@ -1,5 +1,5 @@
 export const SEMANTIC_TYPES = [
-  'character', 'location', 'geography', 'organization', 'faction', 'law', 'history', 'economy', 'magic', 'culture', 'event', 'rule', 'item', 'concept', 'relationship', 'style'
+  'character', 'profession', 'location', 'geography', 'organization', 'faction', 'law', 'history', 'economy', 'magic', 'culture', 'event', 'rule', 'item', 'concept', 'relationship', 'style'
 ];
 
 export const FUNCTION_TYPES = [
@@ -7,6 +7,7 @@ export const FUNCTION_TYPES = [
 ];
 
 const SEMANTIC_HINTS = [
+  ['profession', ['职业', '岗位', '从业者', '职业形象', '这份工作', '入行']],
   ['location', ['地点', '城市', '城区', '街', '区', '村', '镇', '港', '学院', '王都', '贫民区', '秘境']],
   ['geography', ['地理', '地形', '地貌', '山川', '河流', '气候', '大陆', '版图', '地图', '疆域', '地脉']],
   ['organization', ['组织', '教会', '公会', '公司', '机构', '军团', '议会', '学院', '家族']],

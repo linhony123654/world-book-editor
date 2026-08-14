@@ -533,6 +533,74 @@ svg { display: block; }
 .setting strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 15px; font-weight: 400; }
 .setting small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
 
+/* ===== 版本 diff（GitHub 风格） ===== */
+.diff-summary { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.diff-summary small { color: var(--muted); font-size: 10px; }
+.diff-stat { font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+.diff-stat.add { color: var(--forest); }
+.diff-stat.del { color: var(--danger); }
+.diff-stat.mod { color: var(--gold); }
+.diff-content { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.diff-entry {
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.diff-entry.add { border-color: var(--forest); background: var(--forest-soft); }
+.diff-entry.del { border-color: var(--danger); background: color-mix(in srgb, var(--wine-soft) 60%, transparent); }
+.diff-entry b { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 13px; font-weight: 400; }
+.diff-entry small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+.diff-lines { margin-top: 8px; border-radius: 6px; overflow: hidden; }
+.diff-line { padding: 3px 8px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.diff-line.add { background: color-mix(in srgb, var(--forest-soft) 70%, transparent); color: var(--forest); }
+.diff-line.del { background: color-mix(in srgb, var(--wine-soft) 70%, transparent); color: var(--danger); }
+.diff-more { padding: 4px 8px; color: var(--muted); font-size: 9px; }
+.diff-field { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 10px; flex-wrap: wrap; }
+.diff-fname { color: var(--muted); font-weight: 700; }
+.diff-old { color: var(--danger); text-decoration: line-through; opacity: .85; }
+.diff-new { color: var(--forest); }
+.diff-arrow { color: var(--faint); }
+.diff-empty { padding: 20px 0; color: var(--muted); text-align: center; font-size: 12px; }
+
+/* ===== 历史版本 ===== */
+.version-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.version-empty { padding: 18px 0; color: var(--muted); font-size: 12px; text-align: center; }
+.version-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+}
+.version-main { min-width: 0; flex: 1; }
+.version-main strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 14px; font-weight: 400; }
+.version-main small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.version-titles { display: block; margin-top: 5px; color: var(--ink); font-size: 10px; line-height: 1.5; opacity: .85; }
+.version-tag { color: var(--gold); font-size: 9px; font-weight: 700; }
+.version-actions { display: flex; gap: 6px; flex: none; }
+.version-actions .action { width: auto; padding: 4px 10px; min-height: 0; height: auto; font-size: 10px; }
+
+/* ===== 破限预设 ===== */
+.jb-preset-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.jb-preset {
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; transition: .15s ease;
+}
+.jb-preset:hover { border-color: var(--wine); background: var(--wine-soft); }
+.jb-preset strong { display: block; font-family: Georgia, "Times New Roman", "Songti SC", serif; font-size: 14px; font-weight: 400; }
+.jb-preset small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.jb-undo-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: transparent;
+  transition: .2s ease;
+}
+.jb-undo-row.active {
+  border-color: var(--forest);
+  background: var(--forest-soft);
+}
+.jb-undo-tip { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.jb-undo-row.active .jb-undo-tip { color: var(--forest); }
+.jb-undo-row .action { width: auto; padding: 5px 12px; min-height: 0; height: auto; font-size: 10px; }
+.jb-undo-row .action:disabled { opacity: .4; cursor: default; }
+
+/* ===== 登录 / 首次设置 ===== */
+
 /* ===== 登录 / 首次设置 ===== */
 .app.auth-hidden .bottom-nav { display: none; }
 .login-page { min-height: 100dvh; display: flex; flex-direction: column; padding-bottom: 48px; }
@@ -566,6 +634,11 @@ svg { display: block; }
 .switch.off::after { right: 21px; background: var(--muted); }
 .theme-pair { display: flex; align-items: center; gap: 8px; color: var(--gold); }
 
+/* 破限预设弹窗可能在接口配置弹窗之上打开，需更高层级 */
+#jbModal { z-index: 40; }
+/* 版本历史及其 diff 预览要在其他弹窗之上 */
+#versionsModal { z-index: 41; }
+#diffModal { z-index: 42; }
 /* ===== Modal / sheet / toast ===== */
 .modal { position: fixed; inset: 0; display: none; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.48); backdrop-filter: blur(8px); z-index: 30; }
 .modal.open { display: flex; }

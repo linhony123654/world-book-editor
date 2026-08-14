@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="style.css?v=mag12" />
+  <link rel="stylesheet" href="style.css?v=mag13" />
 </head>
 <body>
   <main class="app">
@@ -161,6 +161,9 @@
           </button>
           <button class="icon-btn" id="quickSaveBtn" aria-label="保存">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+          <button class="icon-btn" id="editorVersionsBtn" aria-label="历史版本">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></svg>
           </button>
         </div>
       </header>
@@ -350,6 +353,13 @@
           <div class="setting">
             <div><strong>重新加载</strong><small id="storageLabel">从服务器拉取当前世界书</small></div>
             <button class="action" id="reloadBtn" style="width:82px;">Reload</button>
+          </div>
+          <div class="setting">
+            <div style="min-width:0;flex:1">
+              <strong>历史版本</strong>
+              <small id="versionStatusLabel">当前书自动保存快照，可查看与回滚</small>
+            </div>
+            <button class="action" style="width:82px;flex:0 0 auto;" id="versionsBtn">查看</button>
           </div>
         </div>
 
@@ -578,7 +588,14 @@
       </div>
       <div class="field">
         <label>系统提示词</label>
-        <textarea id="apiPromptInput" rows="4" placeholder="你是一个世界书编辑助手…" aria-label="系统提示词"></textarea>
+        <div class="model-row">
+          <textarea id="apiPromptInput" rows="4" placeholder="你是一个世界书编辑助手…" aria-label="系统提示词"></textarea>
+          <button class="action" id="jbPresetBtn" style="width:74px;height:40px;align-self:flex-start;">破限预设</button>
+        </div>
+        <div class="jb-undo-row" id="jbUndoRow">
+          <small id="jbUndoTip">未加入破限模板</small>
+          <button class="action" id="jbUndoBtn" disabled>撤销</button>
+        </div>
       </div>
       <div class="sheet-actions" style="grid-template-columns:1fr 1fr 1fr">
         <button class="action danger" id="deleteProfileBtn">删除</button>
@@ -635,6 +652,47 @@
   </div>
 
   <!-- 快捷键一览 -->
+
+  <!-- 版本 diff -->
+  <div class="modal" id="diffModal">
+    <div class="sheet sheet-scroll">
+      <div class="mini">Version diff</div>
+      <h3 id="diffTitle">版本对比</h3>
+      <div class="diff-summary" id="diffSummary"></div>
+      <div class="diff-content" id="diffContent"></div>
+      <div class="sheet-actions">
+        <button class="action" id="diffBackBtn">返回列表</button>
+        <button class="action danger" id="diffRollbackBtn">回滚到该版本</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 历史版本 -->
+  <div class="modal" id="versionsModal">
+    <div class="sheet sheet-scroll">
+      <div class="mini">Version history</div>
+      <h3>历史版本</h3>
+      <p class="memory-note">当前书「<strong id="versionsBookName">…</strong>」的自动快照：每次内容变化时保存一版（最多保留最近 30 个）。回滚前会自动备份当前状态。</p>
+      <div class="version-list" id="versionsList"></div>
+      <div class="sheet-actions">
+        <button class="action" data-close-modal="versionsModal">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 破限预设 -->
+  <div class="modal" id="jbModal">
+    <div class="sheet sheet-scroll">
+      <div class="mini">Freedom presets</div>
+      <h3>破限预设</h3>
+      <p class="memory-note">选择一档模板，会<strong>追加到系统提示词末尾</strong>（可编辑、可删除）。效果因模型而异：本地/开源模型明显，Claude/GPT 效果递减。不含未成年相关内容。</p>
+      <div class="jb-preset-list" id="jbPresetList"></div>
+      <div class="sheet-actions">
+        <button class="action" data-close-modal="jbModal">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="importModal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
     <div class="sheet">
       <div class="mini">Import</div>
@@ -694,14 +752,7 @@
   <span id="file-name" hidden>world-book.json</span>
   <input type="file" id="file-input" accept=".json" hidden />
 
-  <script type="module" src="app.js?v=mag12"></script>
-  <script>
-    // PWA: Service Worker 注册（仅 HTTPS/localhost 安全上下文生效）
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
-      });
-    }
-  </script>
+  <script type="module" src="app.js?v=mag13"></script>
+  <script src="sw-register.js"></script>
 </body>
 </html>

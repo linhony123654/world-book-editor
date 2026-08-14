@@ -24,9 +24,14 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   '条目级——搜索/查看/新增(单条 add_entry、多条 add_entries)/编辑/批量修改/删除(单条 delete_entry、批量 delete_entries)/启用禁用/排序/复制/撤销；' +
   '智能写作——当用户要求创建人物、地点、组织、规则、事件、物品、关系、文风等设定条目时，复杂条目优先用 plan_smart_entry 生成预览，由用户确认后写入；用户明确要求直接创建时才用 create_smart_entry。content 必须写完整正文：按「段落名：内容」逐段写完所有段落，每段要有具体可用的设定细节，严禁输出“需要写成…”“围绕…补充”“可直接进入对话上下文”等指令性占位文字。你可以根据本书气质自由给出 customType、classificationReason、templateSections 和设置判断矩阵；' +
   '世界书条目规范——条目是注入给扮演 AI 的设定片段，不是给用户看的文章：正文直接陈述设定事实，信息密度高；篇幅按设定复杂度弹性——小条目 80–300 字，主要人物/组织/规则体系等大卡可 500–1500 字甚至更长，内容完整优先，不删细节也不注水。按段落组织；关键词选书里会出现的人名/地名/物品/概念等具体词（2–6 个），不要用“他”“王城”这类过泛的词；常驻(constant)用于始终生效的规则/口吻，关键词触发用于按需注入的具体设定；内容与已有条目互补，不重复改写同一设定。参考示例：「标题：王城夜禁｜关键词：夜禁、宵禁｜正文：王城每日戌时起宵禁，城门紧闭、坊市禁火。巡夜禁军遇无令牌者先警告再擒拿，反抗者可就地处决；仅更夫、御医与持金牌者通行。」' +
+  '设定集规范——世界书条目应当像动漫/小说的设定集词条：结构完整、信息分层、可考据、中立客观。正文必须覆盖四要素：人（职业/岗位/关键人物）、地（至少 2 个具体地点）、数（价格/时间/数量/比例）、则（流程/规则/代价）。类型定制要素：医疗机构→诊室/科室分布、岗位分工、诊疗流程、收费规则；法律→适用对象、条文、处罚、执行机构；地点→空间布局、出入口、常驻人员、禁区；组织→架构、资金来源、成员数量、地盘范围；人物→身份履历、外貌、性格、能力、关系、现状。缺少要素是缺陷，必须补全。' +
+  '外观与衣着描写（人物、职业、成员相关条目必填）——按可观测细节写：上衣（款式、材质、颜色、领口/袖口）、下装、鞋、外搭；配饰（首饰、武器、随身物、身份标志）；体貌（发色瞳色、伤疤纹身、体态、惯用手）。全部是旁观者一眼可见的特征，供角色扮演直接调用，禁止“穿着得体”“气质优雅”等空泛词。' +
+  '世界观条目组织（法律/历史/地理/经济/超凡体系/文化）——同样按设定集词条组织，用分节标题、四要素、中立可考据：法律像法条（逐条列出），历史像年表（时间线+事件+影响），地理像志书（区域+地标+物产），超凡体系像教科书（原理+等级+代价+禁忌）。' +
   '局部修改优先——改正文里的个别词用 replace_text 查找替换（不必整段重写）、增删关键词用 manage_keys、改插入位置用 move_entry；' +
   '整本世界书级——get_book_info 查当前书信息、list_books 列出所有书、switch_book 切换、create_book 新建、rename_book 重命名、delete_book 删除(需 confirm:true)。' +
-  '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。';
+  'web_search 使用规则——仅在需要现实世界资料时调用（用户要求查证历史/地理/文化/法律/科技等真实知识，或写作需要现实依据时）；世界书内部内容一律用 search_entries 查，不要联网；纯虚构创作且用户未要求查证时不要调用；单回合最多调用 5 次；结果需甄别，提炼可用信息融入设定，不要照抄原文。' +
+  '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。' +
+  '关键词冲突处理规则——check_entries 报告里的“[关键词共享]”不是错误：两条目共用关键词但内容不重叠时（如人物与其装备共享人名），是有意的互补设计，必须保留，不要改动。只有“[关键词冲突]”（内容高度相似）才需要处理。处理方式优先合并或调整新增的条目，禁止擅自删除/修改已有条目的关键词——那会让该条目失去触发；确需修改时先向用户说明影响并得到确认。';
 // 工具调用文本格式的正则都从 TOOL_NAME_PATTERN 派生，名单单一来源，避免多处重复漂移
 const TOOL_CALL_JSON_RE = new RegExp('\\{\\s*"name"\\s*:\\s*"(' + TOOL_NAME_PATTERN + ')"\\s*,\\s*"arguments"\\s*:\\s*(\\{[\\s\\S]*?\\})\\s*\\}', 'g');
 const TOOL_FN_RE = new RegExp('\\b(' + TOOL_NAME_PATTERN + ')\\s*\\(([^)]*)\\)', 'g');
@@ -905,6 +910,26 @@ function attachMsgRow(msgEl, idx) {
   host.appendChild(row);
 }
 
+// 从工具参数里取草稿标题（预览中断时用）
+function draftTitleOf(toolName, args) {
+  try {
+    const a = typeof args === 'string' ? JSON.parse(args) : (args || {});
+    return (a && a.title) || (a && a.userRequest ? String(a.userRequest).slice(0, 16) : '');
+  } catch { return ''; }
+}
+
+// ===== 一键整理全书：体检 + 输出整改计划（执行需用户确认） =====
+function toolCleanupBook() {
+  const report = toolCheckEntries();
+  const info = toolBookInfo();
+  return {
+    summary: '体检完成：' + report.summary + '（' + info.summary + '）',
+    detail: '『当前书概览』\n' + info.detail.split('\n').slice(0, 4).join('\n') +
+      '\n\n『体检报告』\n' + report.detail +
+      '\n\n请根据上述报告输出逐项整改计划（条目、问题、处理方式），等待用户确认后再执行修改。'
+  };
+}
+
 function attachResendBtn(msgEl, idx) { attachMsgRow(msgEl, idx); }
 function attachMsgActions(msgEl, idx) { attachMsgRow(msgEl, idx); }
 
@@ -1448,6 +1473,12 @@ async function sendChat(prevText) {
           // 原生 function calling 协议要求一个 tool_call_id 对应一条 tool 消息，不能合并；
           // 用截断控制每条 detail 大小，控制整体膨胀
           messages.push({ role: 'tool', tool_call_id: callId, content: truncateToolDetail(r.detail) });
+          if (r.stop) {
+            // 预览类工具（plan_smart_entry）：中断循环，等待用户在弹窗确认，禁止 AI 继续创建
+            chatMessages.push({ role: 'assistant', content: '已生成预览「' + (draftTitleOf(tc.function.name, args) || '草稿') + '」，请在弹窗中确认或取消。' });
+            trimHistory();
+            return;
+          }
         }
         continue; // 回到循环，AI 可继续调用工具或给出最终回复
 
@@ -1465,6 +1496,12 @@ async function sendChat(prevText) {
           if (r.changes && r.changes.length) turnChanges.push(...r.changes.map(c => ({ tool: tc.name, ...c })));
           appendChatMessage('tool', tc.name + ': ' + r.summary);
           toolResultsText.push(tc.name + ' 结果: ' + r.summary + '\n' + truncateToolDetail(r.detail));
+          if (r.stop) {
+            // 预览类工具：中断，等待用户确认
+            chatMessages.push({ role: 'assistant', content: '已生成预览，请在弹窗中确认或取消。' });
+            trimHistory();
+            return;
+          }
         }
 
         messages.push({ role: 'assistant', content: aiText || result.content || '' });
@@ -1746,7 +1783,7 @@ function buildToolsList() {
       type: 'function',
       function: {
         name: 'plan_smart_entry',
-        description: '生成智能世界书条目草稿并打开预览弹窗，不写入世界书。复杂条目、递归条目、剧情钩子、隐藏设定优先用这个工具，让用户确认后再创建。参数与 create_smart_entry 相同。',
+        description: '生成智能世界书条目草稿并打开预览弹窗，不写入世界书。调用本工具后你会停止当前回合，等待用户在预览弹窗中确认或取消；用户确认后条目由前端写入。禁止在本回合继续调用 create_smart_entry 或其他工具，也不要假装条目已创建。复杂条目、递归条目、剧情钩子、隐藏设定优先用这个工具。',
         parameters: smartEntryParameters()
       }
     },
@@ -1962,6 +1999,29 @@ function buildToolsList() {
     {
       type: 'function',
       function: {
+        name: 'web_search',
+        description: '联网搜索现实资料（历史、地理、文化、法律等），供创作设定时参考。搜索结果可能不准，需甄别后使用；适合查真实世界知识，不适合查世界书内部内容。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '搜索词，如“唐朝宵禁制度”' },
+            limit: { type: 'integer', minimum: 1, maximum: 5, description: '返回条数，默认 3' }
+          },
+          required: ['query']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'cleanup_book',
+        description: '对当前世界书做全面体检并输出整改计划。本地执行全书检查（空正文/永不触发/关键词过短或冲突/标题重复），然后你必须输出逐项整改计划（条目、问题、建议处理方式：补全/合并/补关键词/删除），等待用户确认后再执行修改。输出计划前禁止调用任何修改类工具（edit/delete/merge/batch_edit 等）。用户要求“整理/体检/看看这本书有什么问题”时调用。',
+        parameters: { type: 'object', properties: {} }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'undo_last',
         description: '撤销对世界书的修改（新增/删除/编辑/批量/复制等），恢复到操作前的状态；steps 大于 1 时一次回退多步',
         parameters: {
@@ -2119,7 +2179,7 @@ function smartEntryParameters() {
     properties: {
       userRequest: { type: 'string', description: '用户原始需求，用于判断条目类型与功能' },
       title: { type: 'string', description: '条目标题；不传则从 userRequest 推断' },
-      semanticType: { type: 'string', enum: ['character','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '语义类型：character 人物 / location 具体地点 / geography 地理地貌 / organization 组织 / faction 阵营 / law 法律制度 / history 历史沿革 / economy 经济贸易 / magic 超凡体系(魔法科技) / culture 文化习俗信仰 / event 事件 / rule 通用规则 / item 物品 / concept 概念 / relationship 关系 / style 文风。不确定可不传' },
+      semanticType: { type: 'string', enum: ['character','profession','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '语义类型：character 人物 / profession 职业设定(空姐、警察、医生等，写职业本身而非具体个人) / location 具体地点 / geography 地理地貌 / organization 组织 / faction 阵营 / law 法律制度 / history 历史沿革 / economy 经济贸易 / magic 超凡体系(魔法科技) / culture 文化习俗信仰 / event 事件 / rule 通用规则 / item 物品 / concept 概念 / relationship 关系 / style 文风。不确定可不传' },
       customType: { type: 'string', description: 'AI 自定义分类，如“地下据点”“宫廷传闻”“禁术代价”“边境黑市”等' },
       functionType: { type: 'string', enum: ['keyword_trigger','constant_background','recursive_detail','voice_constraint','plot_hook','hidden_fact','conflict_fix'], description: '功能类型，不确定可不传' },
       classificationReason: { type: 'string', description: '简短说明为什么这样分类。展示给用户作为可审计理由，不要写隐藏思维链。' },
@@ -2137,6 +2197,7 @@ function smartEntryParameters() {
       scope: { type: 'string', enum: ['global','character','scene','plot','style','safety'], description: '作用范围。' },
       matchStrictness: { type: 'string', enum: ['loose','normal','strict','exact'], description: '匹配严格度。' },
       reason: { type: 'string', description: '设置判断理由，展示给用户。' },
+      relatedEntries: { type: 'array', items: { type: 'object', properties: { name: { type: 'string', description: '关联词条名称（正文中提到的具体地点/建筑/组织/人物/物品）' }, type: { type: 'string', description: '建议类型：location/profession/organization/character/item/law 等' }, note: { type: 'string', description: '为什么值得单独建条（一句话）' } }, required: ['name'] }, description: '关联词条：正文涉及的具体地点/建筑/部门/人物，若值得单独建条则列出。工具会检查是否已有同名条目，没有的会提示用户考虑创建。' },
       content: { type: 'string', description: '完整可写入的世界书正文草稿——它是注入给扮演 AI 的设定片段，不是给用户看的文章：直接陈述设定事实、信息密度高、按段落组织；篇幅按复杂度：小条目 80–300 字，主要人物/组织/规则等大卡可 500 字以上，完整优先。严禁只给框架/段落标题/“需要写成…”等指令占位；缺失段落会自动补全。' },
       key: { type: 'array', items: { type: 'string' }, description: '触发关键词：书里会出现的人名/地名/物品/概念等具体词，2–6 个，避免“他”“王城”等过泛词；不传则按标题/类型推断' },
       constant: { type: 'boolean', description: '强制常驻设置（常驻用于始终生效的规则/口吻）；不传则按矩阵推荐' }
@@ -2268,6 +2329,8 @@ async function executeTool(name, args) {
     case 'check_entries': return toolCheckEntries();
     case 'test_triggers': return toolTestTriggers(args || {});
     case 'export_book': return toolExportBook();
+    case 'web_search': return await toolWebSearch(args || {});
+    case 'cleanup_book': return toolCleanupBook();
     case 'find_duplicates': return toolFindDuplicates(args || {});
     case 'undo_last': return toolUndo(args);
     case 'get_book_info': return toolBookInfo();
@@ -2456,7 +2519,11 @@ function toolAddMany({ entries: items }) {
 async function toolCreateSmartEntry(args) {
   const draft = planWorldbookEntry(withWritingTemplate(args));
   const completed = await maybeCompleteSmartContent(draft, args);
-  return commitSmartDraft(completed);
+  const r = commitSmartDraft(completed);
+  const related = checkRelatedEntries(args);
+  if (related) r.detail += related;
+  r.detail += checkNewEntry(r.uid, completed);
+  return r;
 }
 
 async function toolPlanSmartEntry(args) {
@@ -2465,8 +2532,24 @@ async function toolPlanSmartEntry(args) {
   const record = createSmartDraftRecord(completed);
   setActiveSmartDraft(smartDraftState, record);
   renderSmartDraftModal(record);
-  const detail = smartDraftDetail(completed, null);
-  return { summary: '已生成智能条目预览「' + completed.title + '」', detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消。' };
+  const detail = smartDraftDetail(completed, null) + checkRelatedEntries(args);
+  // stop: true → 中断工具循环，等待用户在预览弹窗确认/取消，禁止 AI 继续创建
+  return { summary: '已生成智能条目预览「' + completed.title + '」，请在弹窗中确认', stop: true, detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消，本回合已停止。' };
+}
+
+// 关联词条检查：正文涉及的实体若未建条，提示用户考虑创建（设定集联动）
+function checkRelatedEntries(args) {
+  const list = (Array.isArray(args && args.relatedEntries) ? args.relatedEntries : [])
+    .filter(r => r && String(r.name || '').trim())
+    .slice(0, 8);
+  if (!list.length) return '';
+  const existing = getAllEntries();
+  const existingNames = new Set(existing.map(e => String(e.comment || '').trim()));
+  const missing = list.filter(r => !existingNames.has(String(r.name).trim()));
+  if (!missing.length) return '\n关联词条：正文涉及 ' + list.length + ' 个实体均已有条目，无需新建。';
+  return '\n关联词条建议（现有条目中未找到，可考虑创建）：\n' + missing.map(r =>
+    '· ' + r.name + '（' + (r.type || '未知类型') + '）' + (r.note ? ' — ' + r.note : '')
+  ).join('\n');
 }
 
 // 检测正文是否不完整（指令性占位/段落缺失/过短），命中则让模型补全为完整正文
@@ -2485,7 +2568,7 @@ async function maybeCompleteSmartContent(draft, args) {
   if (!incomplete) return draft;
   try {
     const text = await fetchCompletion([
-      { role: 'system', content: '你是世界书设定写手。世界书条目是注入给扮演 AI 的设定片段，不是给用户看的文章：直接陈述设定事实，信息密度高；篇幅按设定复杂度弹性——小条目 80–300 字，主要人物/组织/规则等大卡可 500–1500 字甚至更长，内容完整优先。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节、可触发；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
+      { role: 'system', content: '你是世界书设定写手。世界书条目应当像设定集词条：结构完整、信息分层、可考据、中立客观。正文必须覆盖四要素：人（职业/岗位/关键人物）、地（至少 2 个具体地点）、数（价格/时间/数量/比例）、则（流程/规则/代价），缺少要素是缺陷必须补全。人物/职业相关条目必须写详细外观：上衣款式材质颜色、下装、鞋、外搭、配饰、体貌特征，全部是旁观者可见的细节，禁止“穿着得体”等空泛词。篇幅按设定复杂度弹性——小条目 80–300 字，大卡可 500–1500 字甚至更长。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节、可触发；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
       { role: 'user', content: '条目主题：' + (draft.title || '') +
         '\n段落模板：' + (sections ? sections.join('、') : '（按内容自然分段）') +
         '\n现有内容：\n' + (content || '（无）') }
@@ -2536,7 +2619,21 @@ function commitSmartDraft(draft) {
   entries.push(entry);
   renderSidebar();
   scheduleSave();
-  return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid), changes: [{ type: 'add', uid, comment: draft.title || '', detail: '智能创建' }] };
+  return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid), changes: [{ type: 'add', uid, comment: draft.title || '', detail: '智能创建' }], uid };
+}
+
+// 创建后体检联动：新条目自身风险 + 与全书的冲突/共享提示
+function checkNewEntry(uid, draft) {
+  const lines = [];
+  for (const c of (draft.checks || [])) {
+    if (c.level === 'warning' || c.level === 'danger') lines.push('[' + c.level + '] ' + c.message);
+  }
+  const report = toolCheckEntries();
+  for (const l of String(report.detail || '').split('\n')) {
+    if (l.includes('#' + uid)) lines.push(l);
+  }
+  if (!lines.length) return '\n新条目体检：未发现风险。';
+  return '\n新条目体检：\n' + lines.join('\n');
 }
 
 function smartDraftDetail(draft, uid) {
@@ -2967,6 +3064,23 @@ function toolFindDuplicates({ limit } = {}) {
 }
 
 // ===== 全书体检 =====
+// ===== 全书体检 =====
+// 内容相似度：字符 bigram Jaccard，用于区分“真冲突”与“互补共享”
+function contentSimilarity(a, b) {
+  const grams = s => {
+    const t = String(s || '').replace(/\s+/g, '');
+    if (t.length < 2) return new Set([t]);
+    const set = new Set();
+    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
+    return set;
+  };
+  const A = grams(a), B = grams(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+
 function toolCheckEntries() {
   const list = getAllEntries();
   const issues = [];
@@ -2996,7 +3110,15 @@ function toolCheckEntries() {
     for (const k of keys) {
       if (k.length <= 1) issues.push('[关键词过短] ' + tag + ' 关键词「' + k + '」只有 ' + k.length + ' 个字，容易误触发');
       const holders = (byKey.get(k.toLowerCase()) || []).filter(uid => uid !== e.uid && !list.find(x => x.uid === uid)?.disable);
-      if (holders.length) issues.push('[关键词冲突] ' + tag + ' 关键词「' + k + '」同时用于 ' + holders.map(h => '#' + h).join('、'));
+      for (const h of holders) {
+        const other = list.find(x => x.uid === h);
+        const sim = contentSimilarity(e.content, other && other.content);
+        if (sim > 0.45) {
+          issues.push('[关键词冲突] ' + tag + ' 与 #' + h + ' 共用关键词「' + k + '」且内容高度相似(' + Math.round(sim * 100) + '%)，建议合并或调整其中一条');
+        } else {
+          issues.push('[关键词共享] ' + tag + ' 与 #' + h + ' 共用关键词「' + k + '」（内容不重叠，可能是有意互补——如人物与其装备共享人名，属合理设计，可保留）');
+        }
+      }
     }
     const dupTitles = (byTitle.get(String(e.comment || '').toLowerCase()) || []).filter(uid => uid !== e.uid);
     if (dupTitles.length) issues.push('[标题重复] ' + tag + ' 与 ' + dupTitles.map(h => '#' + h).join('、') + ' 标题相同');
@@ -3048,12 +3170,34 @@ function toolExportBook() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = name.replace(/[\\/:*?"<>|]/g, '_') + '.json';
-  document.body.appendChild(a);
+  a.download = name.replace(/[\\/:*?"<>|]/g, '_') + '.json';  document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
   return { summary: '已导出「' + name + '」(' + getAllEntries().length + ' 条)', detail: 'JSON 文件已开始下载，可直接导入 SillyTavern。' };
+}
+
+// ===== 联网搜索 =====
+async function toolWebSearch({ query, limit }) {
+  const q = String(query || '').trim();
+  if (!q) return { summary: '缺少搜索词', detail: '请提供要搜索的内容' };
+  const { authHeaders } = await import('./auth.js');
+  const resp = await fetch('/api/proxy/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ q })
+  });
+  if (resp.status === 503) {
+    return { summary: '搜索服务被限流', detail: '搜索服务暂时被限流（反爬），请稍后重试或换关键词。你可以先用现有知识创作，稍后再补查。' };
+  }
+  if (!resp.ok) throw new Error('搜索接口 HTTP ' + resp.status);
+  const data = await resp.json();
+  const list = (data.results || []).slice(0, Math.max(1, Math.min(parseInt(limit, 10) || 3, 5)));
+  if (!list.length) return { summary: '搜索无结果', detail: '「' + q + '」没有找到结果，可换关键词重试' };
+  const lines = list.map((r, i) =>
+    (i + 1) + '. ' + r.title + '\n   ' + r.url + '\n   ' + (r.snippet || '(无摘要)')
+  );
+  return { summary: '搜索到 ' + list.length + ' 条（' + q + '）', detail: lines.join('\n\n') };
 }
 
 function toolUndo(args) {
