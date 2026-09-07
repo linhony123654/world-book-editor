@@ -26,15 +26,10 @@ jobs:
       - name: Apply guarded chat migrations
         run: |
           node scripts/refactor-chat-transport.mjs
-          if [ -f scripts/refactor-chat-mutations.mjs ]; then
-            node scripts/refactor-chat-mutations.mjs
-          fi
-          if [ -f scripts/refactor-chat-tools.mjs ]; then
-            node scripts/refactor-chat-tools.mjs
-          fi
-          if [ -f scripts/refactor-chat-pure-ui.mjs ]; then
-            node scripts/refactor-chat-pure-ui.mjs
-          fi
+          if [ -f scripts/refactor-chat-mutations.mjs ]; then node scripts/refactor-chat-mutations.mjs; fi
+          if [ -f scripts/refactor-chat-tools.mjs ]; then node scripts/refactor-chat-tools.mjs; fi
+          if [ -f scripts/refactor-chat-pure-ui.mjs ]; then node scripts/refactor-chat-pure-ui.mjs; fi
+          if [ -f scripts/refactor-chat-read-tools.mjs ]; then node scripts/refactor-chat-read-tools.mjs; fi
       - name: Regression tests
         run: npm test
       - name: Commit generated refactor
@@ -46,5 +41,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add public/modules/chat.js public/modules/ai
-          git commit -m "refactor(ai): extract conversation budget and markdown"
+          git commit -m "refactor(ai): extract read-only worldbook tools"
           git push origin HEAD:refactor/lore-atlas-v2
