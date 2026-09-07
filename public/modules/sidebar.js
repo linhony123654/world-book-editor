@@ -2,10 +2,11 @@
 import { escHtml, $, showToast, showConfirm } from './utils.js';
 import {
   entries, currentUid, currentFilter, searchQuery,
-  worldBook, setEntries, setCurrentUid, setCurrentFilter, setSearchQuery,
-  snapshotForUndo, uidKey
+  setCurrentUid, setCurrentFilter, setSearchQuery
 } from './state.js';
 import { scheduleSave } from './api.js';
+import { runWorldBookCommand } from './domain/command-runtime.js';
+import { CommandType } from './domain/worldbook-commands.js';
 
 // 模块级回调 / 导航
 let onSelectEntryCallback = null;
@@ -261,11 +262,16 @@ function selectedEntries() {
 function batchSetField(field, value, label) {
   const list = selectedEntries();
   if (!list.length) { showToast('未选中任何条目', 'info'); return; }
-  snapshotForUndo(label);
-  list.forEach(e => { e[field] = value; });
+  const result = runWorldBookCommand({
+    type: CommandType.SET_ENTRY_FIELD,
+    uids: list.map(e => e.uid),
+    field,
+    value
+  }, { label });
+  if (!result.changed) { showToast('所选条目无需修改', 'info'); return; }
   renderSidebar();
   scheduleSave();
-  showToast(label + ' ' + list.length + ' 条', 'success');
+  showToast(label + ' ' + result.affectedUids.length + ' 条', 'success');
 }
 
 // 批量删除（含确认）
@@ -279,18 +285,21 @@ async function batchDelete() {
     danger: true
   });
   if (!ok) return;
-  snapshotForUndo('批量删除');
-  list.forEach(e => { delete worldBook.entries[uidKey(e.uid)]; });
-  setEntries(entries.filter(e => !selectedSet.has(e.uid)));
+  const deletingUids = list.map(e => e.uid);
+  const result = runWorldBookCommand({
+    type: CommandType.DELETE_ENTRIES,
+    uids: deletingUids
+  }, { label: '批量删除' });
+  if (!result.changed) return;
   selectedSet.clear();
   renderSidebar();
-  // 正编辑的条目若被删，清空编辑器
-  if (currentUid != null && !entries.some(e => e.uid === currentUid)) {
-    setCurrentUid(null);
-    if (deps && deps.renderEditorEmpty) deps.renderEditorEmpty();
+  // 正编辑的条目若被删，切到剩余第一条；无剩余时清空 selection。
+  if (currentUid != null && result.deletedUids.includes(currentUid)) {
+    if (entries.length > 0) selectEntry(entries[0].uid);
+    else setCurrentUid(null);
   }
   scheduleSave();
-  showToast('已删除 ' + list.length + ' 条', 'success');
+  showToast('已删除 ' + result.deletedUids.length + ' 条', 'success');
 }
 
 function initBatchBar() {
