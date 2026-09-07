@@ -1,12 +1,26 @@
 // ===== Editor 屏（杂志风：完整 42 字段，核心可见 + 高级折叠） =====
 import { escHtml, escAttr, $, showConfirm } from './utils.js';
-import { worldBook, entries, currentUid, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo } from './state.js';
+import { worldBook, entries, currentUid, nextUid, createEntry, restoreUndo } from './state.js';
 import { scheduleSave } from './api.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
+import { runWorldBookCommand } from './domain/command-runtime.js';
+import { CommandType } from './domain/worldbook-commands.js';
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 function dyn() { return $('editorDynamic'); }
 function strip() { return $('saveStrip'); }
+
+function setEntryField(entry, field, value, options = {}) {
+  return runWorldBookCommand({
+    type: CommandType.SET_ENTRY_FIELD,
+    uids: [entry.uid],
+    field,
+    value
+  }, {
+    label: options.label || ('修改 ' + field),
+    undo: options.undo !== false
+  });
+}
 
 // ===== 空编辑器 =====
 export function renderEditorEmpty() {
@@ -221,11 +235,11 @@ export function autoSizeTitle() {
 
 // ===== 事件绑定 =====
 function bindEditorEvents(entry) {
-  // 标题
+  // 标题：高频输入不进入全局 Undo，但仍统一走 domain command。
   const title = $('ed-title');
   if (title) {
     title.addEventListener('input', () => {
-      entry.comment = title.value;
+      setEntryField(entry, 'comment', title.value, { label: '编辑标题', undo: false });
       autoSizeTitle();
       if (titleSidebarTimer) clearTimeout(titleSidebarTimer);
       titleSidebarTimer = setTimeout(() => {
@@ -236,11 +250,11 @@ function bindEditorEvents(entry) {
     });
   }
 
-  // 正文
+  // 正文：文本级撤销交给 textarea/browser，全局 Command 仅作为统一 mutation path。
   const content = $('ed-content');
   if (content) {
     content.addEventListener('input', () => {
-      entry.content = content.value;
+      setEntryField(entry, 'content', content.value, { label: '编辑正文', undo: false });
       const pill = $('ed-charpill');
       if (pill) pill.textContent = content.value.length + ' 字符';
       refreshLines();
@@ -256,9 +270,11 @@ function bindEditorEvents(entry) {
   dyn().querySelectorAll('[data-toggle]').forEach(btn => {
     btn.addEventListener('click', () => {
       const field = btn.dataset.toggle;
-      btn.classList.toggle('off');
-      btn.setAttribute('aria-checked', btn.classList.contains('off') ? 'false' : 'true');
-      entry[field] = !btn.classList.contains('off');
+      const next = btn.classList.contains('off');
+      const result = setEntryField(entry, field, next, { label: '修改 ' + field });
+      if (!result.changed) return;
+      btn.classList.toggle('off', !next);
+      btn.setAttribute('aria-checked', next ? 'true' : 'false');
       if (['disable', 'constant'].includes(field)) renderSidebar();
       scheduleSave();
     });
@@ -270,17 +286,20 @@ function bindEditorEvents(entry) {
     el.addEventListener('change', () => {
       const field = el.dataset.field;
       const v = el.value;
+      let next;
       if (el.tagName === 'SELECT' && ['caseSensitive','matchWholeWords','useGroupScoring'].includes(field)) {
-        entry[field] = v === '' ? null : v === 'true';
+        next = v === '' ? null : v === 'true';
       } else if (field === 'role') {
-        entry[field] = v === '' ? null : parseInt(v);
+        next = v === '' ? null : parseInt(v);
       } else if (field === 'scanDepth') {
-        entry[field] = v === '' ? null : (parseFloat(v) || 0);
+        next = v === '' ? null : (parseFloat(v) || 0);
       } else if (el.type === 'number' || ['position','selectiveLogic'].includes(field)) {
-        entry[field] = v === '' ? 0 : (parseFloat(v) || 0);
+        next = v === '' ? 0 : (parseFloat(v) || 0);
       } else {
-        entry[field] = v;
+        next = v;
       }
+      const result = setEntryField(entry, field, next, { label: '修改 ' + field });
+      if (!result.changed) return;
       if (['constant','disable'].includes(field)) renderSidebar();
       scheduleSave();
     });
@@ -299,9 +318,14 @@ function bindKwRemove(containerId, entry, field) {
   if (!box) return;
   box.querySelectorAll('.keyword').forEach(chip => {
     chip.addEventListener('click', () => {
-      snapshotForUndo('删除关键词');
       const k = chip.dataset.kw;
-      entry[field] = (entry[field] || []).filter(x => x !== k);
+      const result = runWorldBookCommand({
+        type: CommandType.REMOVE_KEYWORD,
+        uid: entry.uid,
+        field,
+        value: k
+      }, { label: '删除关键词' });
+      if (!result.changed) return;
       renderEditor(entry);
       if (field === 'key') renderSidebar();
       scheduleSave();
@@ -317,8 +341,16 @@ function bindKwAdd(inputId, entry, field) {
     e.preventDefault();
     const v = inp.value.trim();
     if (!v) return;
-    entry[field] = entry[field] || [];
-    if (!entry[field].includes(v)) entry[field].push(v);
+    const result = runWorldBookCommand({
+      type: CommandType.ADD_KEYWORD,
+      uid: entry.uid,
+      field,
+      value: v
+    }, { label: '添加关键词' });
+    if (!result.changed) {
+      inp.value = '';
+      return;
+    }
     renderEditor(entry);
     if (field === 'key') renderSidebar();
     scheduleSave();
@@ -333,19 +365,22 @@ export function newEntry(title) {
   if (!worldBook) {
     import('./state.js').then(m => {
       m.setWorldBook(m.createEmptyWorldBook());
-      _addEntry(title, m);
+      _addEntry(title);
     });
     return;
   }
   _addEntry(title);
 }
 
-function _addEntry(title, m) {
+function _addEntry(title) {
   const uid = nextUid();
   const entry = createEntry(uid);
   if (title) entry.comment = title;
-  worldBook.entries[uidKey(uid)] = entry;
-  entries.push(entry);
+  const result = runWorldBookCommand({
+    type: CommandType.CREATE_ENTRY,
+    entry
+  }, { label: '新建条目' });
+  if (!result.changed) return;
   renderSidebar();
   selectEntry(uid);
   import('./utils.js').then(u => u.showToast('已创建条目 #' + uid, 'success'));
@@ -364,10 +399,12 @@ export async function deleteEntry() {
     danger: true
   });
   if (!ok) return;
-  snapshotForUndo('删除条目');
-  delete worldBook.entries[uidKey(currentUid)];
-  const remaining = entries.filter(e => e.uid !== currentUid);
-  setEntries(remaining);
+  const result = runWorldBookCommand({
+    type: CommandType.DELETE_ENTRIES,
+    uids: [currentUid]
+  }, { label: '删除条目' });
+  if (!result.changed) return;
+  const remaining = entries.slice();
   import('./state.js').then(m => m.setCurrentUid(null));
   renderSidebar();
   if (remaining.length > 0) selectEntry(remaining[0].uid);
@@ -393,13 +430,12 @@ export function duplicateEntry() {
   if (currentUid == null || !worldBook) return;
   const src = entries.find(e => e.uid === currentUid);
   if (!src) return;
-  snapshotForUndo('复制条目');
-  const uid = nextUid();
-  const copy = JSON.parse(JSON.stringify(src));
-  copy.uid = uid;
-  copy.comment = (copy.comment || '') + ' (副本)';
-  worldBook.entries[uidKey(uid)] = copy;
-  entries.push(copy);
+  const result = runWorldBookCommand({
+    type: CommandType.DUPLICATE_ENTRY,
+    sourceUid: currentUid
+  }, { label: '复制条目' });
+  if (!result.changed) return;
+  const uid = result.createdUids[0];
   renderSidebar();
   selectEntry(uid);
   import('./utils.js').then(m => m.showToast('已复制为 #' + uid, 'success'));
