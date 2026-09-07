@@ -7,12 +7,14 @@ export const CommandType = Object.freeze({
   DELETE_ENTRIES: 'entry.delete-many',
   DUPLICATE_ENTRY: 'entry.duplicate',
   SET_ENTRY_FIELD: 'entry.set-field',
+  PATCH_ENTRY: 'entry.patch',
   ADD_KEYWORD: 'entry.keyword-add',
   REMOVE_KEYWORD: 'entry.keyword-remove',
   MERGE_ENTRIES: 'entries.merge'
 });
 
 function clone(value) {
+  if (value == null || typeof value !== 'object') return value;
   return JSON.parse(JSON.stringify(value));
 }
 
@@ -50,6 +52,12 @@ function isDuplicateEntry(existing, incoming) {
     (x.content && incoming.content && incoming.content.trim() && x.content === incoming.content));
 }
 
+function sameValue(a, b) {
+  if (Object.is(a, b)) return true;
+  if (a == null || b == null || typeof a !== 'object' || typeof b !== 'object') return false;
+  try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+}
+
 export function commandWouldChange(book, command) {
   ensureBook(book);
   if (!command || !command.type) return false;
@@ -67,19 +75,26 @@ export function commandWouldChange(book, command) {
       const uids = normalizeUids(command.uids);
       return uids.some(uid => {
         const entry = findEntry(book, uid);
-        return entry && !Object.is(entry[command.field], command.value);
+        return entry && !sameValue(entry[command.field], command.value);
       });
+    }
+    case CommandType.PATCH_ENTRY: {
+      const entry = findEntry(book, command.uid);
+      const patch = command.patch && typeof command.patch === 'object' ? command.patch : null;
+      return !!entry && !!patch && Object.entries(patch).some(([field, value]) => !sameValue(entry[field], value));
     }
     case CommandType.ADD_KEYWORD: {
       const entry = findEntry(book, command.uid);
       if (!entry || !command.value) return false;
-      const list = Array.isArray(entry[command.field]) ? entry[command.field] : [];
+      const field = command.field || 'key';
+      const list = Array.isArray(entry[field]) ? entry[field] : [];
       return !list.includes(command.value);
     }
     case CommandType.REMOVE_KEYWORD: {
       const entry = findEntry(book, command.uid);
       if (!entry || !command.value) return false;
-      const list = Array.isArray(entry[command.field]) ? entry[command.field] : [];
+      const field = command.field || 'key';
+      const list = Array.isArray(entry[field]) ? entry[field] : [];
       return list.includes(command.value);
     }
     case CommandType.MERGE_ENTRIES: {
@@ -150,11 +165,26 @@ export function applyWorldBookCommand(book, command) {
     case CommandType.SET_ENTRY_FIELD: {
       for (const uid of normalizeUids(command.uids)) {
         const entry = findEntry(book, uid);
-        if (!entry || Object.is(entry[command.field], command.value)) continue;
+        if (!entry || sameValue(entry[command.field], command.value)) continue;
         entry[command.field] = clone(command.value);
         result.affectedUids.push(entry.uid);
       }
       result.changed = result.affectedUids.length > 0;
+      return result;
+    }
+
+    case CommandType.PATCH_ENTRY: {
+      const entry = findEntry(book, command.uid);
+      const patch = command.patch && typeof command.patch === 'object' ? command.patch : null;
+      if (!entry || !patch) return result;
+      let changed = false;
+      for (const [field, value] of Object.entries(patch)) {
+        if (sameValue(entry[field], value)) continue;
+        entry[field] = clone(value);
+        changed = true;
+      }
+      result.changed = changed;
+      if (changed) result.affectedUids = [entry.uid];
       return result;
     }
 
