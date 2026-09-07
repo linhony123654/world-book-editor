@@ -1181,27 +1181,6 @@ const MUTATING_TOOL_NAMES = new Set([
   'duplicate_entry', 'merge_entries', 'split_entry'
 ]);
 
-const MUTATING_TOOL_NAMES = new Set([
-  'edit_entry', 'add_entry', 'add_entries', 'create_smart_entry',
-  'delete_entry', 'delete_entries', 'batch_edit', 'replace_text',
-  'manage_keys', 'move_entry', 'toggle_entry', 'reorder_entry',
-  'duplicate_entry', 'merge_entries', 'split_entry'
-]);
-
-const MUTATING_TOOL_NAMES = new Set([
-  'edit_entry', 'add_entry', 'add_entries', 'create_smart_entry',
-  'delete_entry', 'delete_entries', 'batch_edit', 'replace_text',
-  'manage_keys', 'move_entry', 'toggle_entry', 'reorder_entry',
-  'duplicate_entry', 'merge_entries', 'split_entry'
-]);
-
-const MUTATING_TOOL_NAMES = new Set([
-  'edit_entry', 'add_entry', 'add_entries', 'create_smart_entry',
-  'delete_entry', 'delete_entries', 'batch_edit', 'replace_text',
-  'manage_keys', 'move_entry', 'toggle_entry', 'reorder_entry',
-  'duplicate_entry', 'merge_entries', 'split_entry'
-]);
-
 async function safeExecuteTool(name, args) {
   // Turn-level rollback is a separate boundary from per-command undo.
   // Read-only tools must not create fake undo history.
