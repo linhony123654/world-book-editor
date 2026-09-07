@@ -13,6 +13,7 @@ import { applyVisibleLimitToChildren, readChatVisibleLimit } from './chat-view.j
 import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows, formatDecision } from './smart-draft.js';
 import { clearActiveSmartDraft, createSmartDraftState, setActiveSmartDraft, takeActiveSmartDraft } from './smart-draft-state.js';
 import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, selectWritingTemplate, writingTemplateKey } from './writing-template.js';
+import { streamFetch, streamSSE } from './ai/transport.js';
 
 // ===== 聊天状态 =====
 const chatMessages = [];
@@ -999,43 +1000,6 @@ function resendLast() {
   }
   if (!userText) return;
   sendChat(userText);
-}
-
-// ===== 流式 SSE 解析 =====
-async function* streamSSE(response) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('data:')) {
-        // 兼容 "data: xxx" 与无空格的 "data:xxx" 两种格式
-        const data = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
-        if (data === '[DONE]') return;
-        try { yield JSON.parse(data); } catch {}
-      }
-    }
-  }
-}
-
-// ===== 流式 fetch 请求 =====
-async function streamFetch(apiUrl, apiKey, body, signal) {
-  // 经本地后端代理转发流式 SSE，绕开第三方网关缺 CORS 头的问题
-  const { authHeaders } = await import('./auth.js');
-  const resp = await fetch('/api/proxy/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ url: apiUrl, key: apiKey, body: { ...body, stream: true } }),
-    signal
-  });
-  if (!resp.ok) throw new Error('API ' + resp.status + ': ' + await resp.text());
-  return resp;
 }
 
 // ===== 流式显示文本 =====
