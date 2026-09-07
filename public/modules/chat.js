@@ -18,6 +18,7 @@ import { CommandType } from './domain/worldbook-commands.js';
 import { getTools } from './ai/tools/definitions.js';
 import { countMessagesTokens, trimToBudget } from './ai/conversation/budget.js';
 import { runConversationTurn } from './ai/conversation/engine.js';
+import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMemoryLimits, normalizeMemory, normalizeSessionList, pruneSessions, recentMemoryTurns, selectActiveSession, titleFromMessages, updateSessionFromChat, visibleMessagesFromSession } from './ai/session/model.js';
 import { formatChatText } from './ai/ui/markdown.js';
 import { applyEntryFilter as filterEntries, searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers, bookInfo as buildBookInfo } from './ai/tools/worldbook-read.js';
 
@@ -45,15 +46,12 @@ const smartDraftState = createSmartDraftState();
 // turns: 每回合一条小总结 {user, actionSummary, toolSummary, toolDetail[], reply, ts}
 // rollups: 每满 ROLLUP_EVERY 条小总结，AI 浓缩成一段阶段总结 {from, to, text}
 // rolledUpCount: 已被大总结覆盖的 turns 前缀数量
-const MAX_MEMORY_TURNS = 100;   // 记忆小总结保留上限（超出丢弃最旧的）
-const MAX_MEMORY_ROLLUPS = 10;  // 阶段总结保留上限
-let memory = { turns: [], rollups: [], rolledUpCount: 0 };
+let memory = emptyMemory();
 let logBookId = null;     // 当前已加载记忆的 bookId
 let isRollingUp = false;  // 大总结进行中锁
 const ROLLUP_EVERY = 10;  // 每满 N 条小总结整合一次
 
 function memKey(bookId) { return 'wbe-memory:' + (bookId || 'unsaved'); }
-function emptyMemory() { return { turns: [], rollups: [], rolledUpCount: 0 }; }
 
 // ===== 会话/记忆持久化：后端 SQLite（容量不受 localStorage 限制），localStorage 仅作一次性迁移源 =====
 // 写操作串行入队，避免并发 PUT 互相覆盖；失败只告警不阻断（下次保存会重写全量）
@@ -98,20 +96,8 @@ function backupCorruptData(key, raw) {
 
 function saveMemory() {
   try {
-    // 上限控制：超出丢弃最旧的；优先丢弃已被大总结覆盖的最旧部分，保持 rolledUpCount 语义
-    if (memory.turns.length > MAX_MEMORY_TURNS) {
-      const excess = memory.turns.length - MAX_MEMORY_TURNS;
-      const dropFromRolled = Math.min(excess, memory.rolledUpCount);
-      if (dropFromRolled > 0) {
-        memory.turns.splice(0, dropFromRolled);
-        memory.rolledUpCount -= dropFromRolled;
-      }
-      if (memory.turns.length > MAX_MEMORY_TURNS) {
-        memory.turns.splice(0, memory.turns.length - MAX_MEMORY_TURNS);
-        if (memory.rolledUpCount > memory.turns.length) memory.rolledUpCount = memory.turns.length;
-      }
-    }
-    if (memory.rollups.length > MAX_MEMORY_ROLLUPS) memory.rollups = memory.rollups.slice(-MAX_MEMORY_ROLLUPS);
+    // 会话模型统一执行记忆上限规则，保持 rolledUpCount 语义。
+    enforceMemoryLimits(memory);
     // 会话级记忆：写入当前会话对象，随会话一起持久化
     const cur = sessions.find(s => s.id === activeSessionId);
     if (cur) cur.memory = memory;
@@ -121,32 +107,19 @@ function saveMemory() {
     import('./utils.js').then(m => m.showToast('记忆保存失败', 'error'));
   }
 }
-function recentTurns() { return memory.turns.slice(memory.rolledUpCount); }
+function recentTurns() { return recentMemoryTurns(memory); }
 
 // ===== 对话历史持久化（按世界书保存，支持多会话并行） =====
 function sessionsKey(bookId) { return 'wbe-sessions:' + (bookId || 'unsaved'); }
 function activeKey(bookId) { return 'wbe-active-session:' + (bookId || 'unsaved'); }
 
-const MAX_SESSIONS = 20; // 每本书最多保留的会话数（超出丢弃最旧不活跃的）
-
 let sessions = [];          // 当前书的会话列表
 let activeSessionId = null; // 活动会话 id
-
-function makeSession() {
-  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now(), aiTitled: false, memory: emptyMemory(), tokensTotal: 0 };
-}
 
 // 累计本会话的发送 token（持久化在 session 对象，随 saveChatHistory 落库）
 function accumulateSessionTokens() {
   const cur = sessions.find(s => s.id === activeSessionId);
-  if (cur) cur.tokensTotal = (cur.tokensTotal || 0) + (lastTokensTotal || 0);
-}
-
-function titleFromMessages(msgs) {
-  const first = msgs.find(m => m.role === 'user');
-  if (!first) return '新对话';
-  const t = String(first.content || '').replace(/\s+/g, ' ').trim();
-  return t.length > 14 ? t.slice(0, 14) + '…' : (t || '新对话');
+  addSessionTokens(cur, lastTokensTotal);
 }
 
 async function loadChatHistory(bookId) {
@@ -195,14 +168,12 @@ async function loadChatHistory(bookId) {
       localStorage.removeItem('wbe-chat:' + (bookId || 'unsaved'));
     } catch {}
   }
-  sessions = (list || []).filter(s => s && Array.isArray(s.messages));
-  const target = sessions.find(s => s.id === activeId) || sessions[sessions.length - 1] || null;
+  sessions = normalizeSessionList(list);
+  const target = selectActiveSession(sessions, activeId);
   activeSessionId = target ? target.id : null;
   chatMessages.length = 0;
   if (target) {
-    for (const m of target.messages) {
-      if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') chatMessages.push({ role: m.role, content: m.content });
-    }
+    chatMessages.push(...visibleMessagesFromSession(target));
     // 会话级记忆：若该会话还没有记忆，迁移旧的「书级记忆」（后端 ai_data / localStorage）到该会话
     if (!target.memory) {
       target.memory = await migrateLegacyMemory(bookId);
@@ -212,11 +183,6 @@ async function loadChatHistory(bookId) {
     memory = emptyMemory();
   }
   updateMemoryBadge();
-}
-
-// 记忆归一：容忍缺字段/旧结构
-function normalizeMemory(m) {
-  return { turns: (m && m.turns) || [], rollups: (m && m.rollups) || [], rolledUpCount: (m && m.rolledUpCount) || 0 };
 }
 
 // 旧书级记忆一次性迁移：后端 ai_data.memory 或 localStorage wbe-memory:<bookId> → 当前会话
@@ -243,21 +209,9 @@ async function migrateLegacyMemory(bookId) {
 function saveChatHistory() {
   try {
     const cur = sessions.find(s => s.id === activeSessionId);
-    if (cur) {
-      cur.messages = chatMessages.slice();
-      cur.updatedAt = Date.now();
-      if (!cur.aiTitled && (!cur.title || cur.title === '新对话')) cur.title = titleFromMessages(chatMessages);
-    }
-    // 会话数上限：保留最近更新的 MAX_SESSIONS 个（活动会话始终保留）
-    if (sessions.length > MAX_SESSIONS) {
-      const active = sessions.find(s => s.id === activeSessionId);
-      const others = sessions.filter(s => s.id !== activeSessionId)
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-        .slice(0, MAX_SESSIONS - (active ? 1 : 0));
-      sessions.length = 0;
-      if (active) sessions.push(active);
-      sessions.push(...others);
-    }
+    if (cur) updateSessionFromChat(cur, chatMessages);
+    // 会话数上限规则由 session model 统一维护。
+    sessions = pruneSessions(sessions, activeSessionId);
     persistPut(logBookId, { sessions, activeSession: activeSessionId });
   } catch (e) {
     console.warn('[WBE] 会话历史保存失败:', e);
