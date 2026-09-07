@@ -1,7 +1,7 @@
 // ===== AI 聊天 =====
 import { escHtml, escAttr, escUrl, $, estimateTokens } from './utils.js';
 import { TOOL_NAMES, TOOL_NAME_PATTERN } from './tool-names.js';
-import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo, undoStackLength, restoreUndoTo } from './state.js';
+import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, setEntries, snapshotForUndo, restoreUndo, undoStackLength, restoreUndoTo } from './state.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
 import { renderEditor, renderEditorEmpty } from './editor.js';
 import { scheduleSave, apiRequest, loadBookList, loadBook, createBook, renameBook, deleteBook } from './api.js';
@@ -14,6 +14,8 @@ import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows, formatDeci
 import { clearActiveSmartDraft, createSmartDraftState, setActiveSmartDraft, takeActiveSmartDraft } from './smart-draft-state.js';
 import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, selectWritingTemplate, writingTemplateKey } from './writing-template.js';
 import { streamFetch, streamSSE } from './ai/transport.js';
+import { runWorldBookCommand } from './domain/command-runtime.js';
+import { CommandType } from './domain/worldbook-commands.js';
 
 // ===== 聊天状态 =====
 const chatMessages = [];
@@ -1294,9 +1296,17 @@ function truncateToolDetail(detail) {
 }
 
 // 单个工具执行异常隔离：出错时把错误消息作为结果返回给模型，继续后续工具
+const MUTATING_TOOL_NAMES = new Set([
+  'edit_entry', 'add_entry', 'add_entries', 'create_smart_entry',
+  'delete_entry', 'delete_entries', 'batch_edit', 'replace_text',
+  'manage_keys', 'move_entry', 'toggle_entry', 'reorder_entry',
+  'duplicate_entry', 'merge_entries', 'split_entry'
+]);
+
 async function safeExecuteTool(name, args) {
-  // 本回合第一个改写工具执行前打一个「回合开始」快照，作为一键撤销的精确回滚点
-  if (turnUndoBase === -1 && name !== 'undo_last') {
+  // Turn-level rollback is a separate boundary from per-command undo.
+  // Read-only tools must not create fake undo history.
+  if (turnUndoBase === -1 && MUTATING_TOOL_NAMES.has(name)) {
     snapshotForUndo('AI 回合开始');
     turnUndoBase = undoStackLength();
   }
@@ -2397,23 +2407,24 @@ function normalizeEntryFieldValue(key, value) {
 function toolEdit({ uid, fields }) {
   const e = getAllEntries().find(e => e.uid === uid);
   if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  snapshotForUndo('编辑 #' + uid);
-  const changed = [];
+  const patch = {};
+  const accepted = [];
   const ignored = [];
   for (const [k, v] of Object.entries(fields || {})) {
     if (k === 'uid') continue;
     const nv = normalizeEntryFieldValue(k, v);
     if (nv === undefined) { ignored.push(k); continue; }
-    e[k] = nv;
-    changed.push(k);
+    patch[k] = nv;
+    accepted.push(k);
   }
+  if (!accepted.length) return { summary: '没有可修改的合法字段', detail: '传入字段均不在白名单内或为空：' + ignored.join(', ') };
+  const result = runWorldBookCommand({ type: CommandType.PATCH_ENTRY, uid, patch }, { label: '编辑 #' + uid });
+  if (!result.changed) return { summary: '#' + uid + ' 没有实际变化', detail: '字段值与当前条目一致' };
   if (currentUid === uid) renderEditor(e);
   renderSidebar();
   scheduleSave();
   const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
-  if (!changed.length) return { summary: '没有可修改的合法字段', detail: '传入字段均不在白名单内或为空：' + ignored.join(', ') };
-  const entryTitle = (getAllEntries().find(e => e.uid === uid) || {}).comment || '';
-  return { summary: '已修改 #' + uid + ' 的 ' + changed.join(','), detail: '修改字段: ' + changed.join(', ') + ignoreNote, changes: [{ type: 'edit', uid, comment: entryTitle, detail: changed.join(',') }] };
+  return { summary: '已修改 #' + uid + ' 的 ' + accepted.join(','), detail: '修改字段: ' + accepted.join(', ') + ignoreNote, changes: [{ type: 'edit', uid, comment: e.comment || '', detail: accepted.join(',') }] };
 }
 
 function applyEntryMeta(entry, semanticType, functionType, extra) {
@@ -2433,16 +2444,15 @@ function applyEntryFields(entry, fields) {
 }
 
 function toolAdd({ comment, content, key, constant, semanticType, functionType }) {
-  snapshotForUndo('新增条目');
   const uid = nextUid();
   const entry = createEntry(uid);
   if (comment) entry.comment = comment;
   if (content) entry.content = content;
-  if (key) entry.key = key;
-  if (constant) entry.constant = constant;
+  if (Array.isArray(key)) entry.key = key.map(String);
+  if (typeof constant === 'boolean') entry.constant = constant;
   applyEntryMeta(entry, semanticType, functionType);
-  worldBook.entries[uidKey(uid)] = entry;
-  entries.push(entry);
+  const result = runWorldBookCommand({ type: CommandType.CREATE_ENTRY, entry }, { label: '新增条目' });
+  if (!result.changed) return { summary: '新增失败', detail: '条目未发生写入' };
   renderSidebar();
   scheduleSave();
   return { summary: '已创建 #' + uid, detail: '新条目 UID: ' + uid, changes: [{ type: 'add', uid, comment: comment || '', detail: (content || '').length + ' 字' }] };
@@ -2452,21 +2462,20 @@ function toolAddMany({ entries: items }) {
   if (!Array.isArray(items) || items.length === 0) {
     return { summary: '未提供条目', detail: 'entries 需为非空数组' };
   }
-  snapshotForUndo('批量新增 ' + items.length + ' 条');
-  const created = [];
+  const prepared = [];
   for (const it of items) {
     if (!it || typeof it !== 'object') continue;
-    const uid = nextUid();
-    const entry = createEntry(uid);
+    const entry = createEntry(prepared.length);
     if (it.comment) entry.comment = it.comment;
     if (it.content) entry.content = it.content;
-    if (it.key) entry.key = it.key;
-    if (it.constant) entry.constant = it.constant;
+    if (Array.isArray(it.key)) entry.key = it.key.map(String);
+    if (typeof it.constant === 'boolean') entry.constant = it.constant;
     applyEntryMeta(entry, it.semanticType, it.functionType);
-    worldBook.entries[uidKey(uid)] = entry;
-    entries.push(entry);
-    created.push(uid);
+    prepared.push(entry);
   }
+  if (!prepared.length) return { summary: '未提供有效条目', detail: 'entries 中没有可创建的对象' };
+  const result = runWorldBookCommand({ type: CommandType.MERGE_ENTRIES, entries: prepared, skipDuplicates: false }, { label: '批量新增 ' + prepared.length + ' 条' });
+  const created = result.createdUids;
   renderSidebar();
   scheduleSave();
   const uidStr = created.length > 8 ? created.slice(0, 8).join(',') + '…' : created.join(',');
@@ -2575,12 +2584,11 @@ function withWritingTemplate(args) {
 }
 
 function commitSmartDraft(draft) {
-  snapshotForUndo('智能新增条目');
   const uid = nextUid();
   const entry = createEntry(uid);
   applyDraftToEntry(entry, draft);
-  worldBook.entries[uidKey(uid)] = entry;
-  entries.push(entry);
+  const result = runWorldBookCommand({ type: CommandType.CREATE_ENTRY, entry }, { label: '智能新增条目' });
+  if (!result.changed) return { summary: '智能创建失败', detail: '条目未发生写入', changes: [], uid: null };
   renderSidebar();
   scheduleSave();
   return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid), changes: [{ type: 'add', uid, comment: draft.title || '', detail: '智能创建' }], uid };
@@ -2652,13 +2660,11 @@ function discardActiveSmartDraft() {
 }
 
 function toolDelete({ uid }) {
-  if (!worldBook.entries[uidKey(uid)]) {
-    return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  }
-  snapshotForUndo('删除 #' + uid);
-  delete worldBook.entries[uidKey(uid)];
-  const newEntries = entries.filter(e => e.uid !== uid);
-  setEntries(newEntries);
+  const target = getAllEntries().find(e => e.uid === uid);
+  if (!target) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
+  const title = target.comment || '';
+  const result = runWorldBookCommand({ type: CommandType.DELETE_ENTRIES, uids: [uid] }, { label: '删除 #' + uid });
+  if (!result.changed) return { summary: '未删除 #' + uid, detail: '条目未发生变化' };
   if (currentUid === uid) {
     import('./state.js').then(m => m.setCurrentUid(null));
     renderEditorEmpty();
@@ -2699,49 +2705,53 @@ function toolDeleteMany({ uids, filter }) {
     return { summary: '未提供条件', detail: '需提供 uids 数组或 filter 条件' };
   }
   if (targets.length === 0) return { summary: '无匹配条目', detail: '没有匹配的条目，未删除' };
-  snapshotForUndo('批量删除 ' + targets.length + ' 条');
   const delUids = targets.map(e => e.uid);
-  const delSet = new Set(delUids);
-  for (const e of targets) delete worldBook.entries[uidKey(e.uid)];
-  setEntries(entries.filter(e => !delSet.has(e.uid)));
-  if (currentUid !== null && delSet.has(currentUid)) {
+  const result = runWorldBookCommand({ type: CommandType.DELETE_ENTRIES, uids: delUids }, { label: '批量删除 ' + targets.length + ' 条' });
+  if (!result.changed) return { summary: '无条目被删除', detail: '目标条目已不存在' };
+  if (currentUid !== null && result.deletedUids.includes(currentUid)) {
     import('./state.js').then(m => m.setCurrentUid(null));
     renderEditorEmpty();
   }
   renderSidebar();
   scheduleSave();
-  const dStr = delUids.length > 8 ? delUids.slice(0, 8).join(',') + '…' : delUids.join(',');
+  const dStr = result.deletedUids.length > 8 ? result.deletedUids.slice(0, 8).join(',') + '…' : result.deletedUids.join(',');
   return {
-    summary: '已删除 ' + delUids.length + ' 条 (UID ' + dStr + ')',
-    detail: '已删除 UID: ' + delUids.join(', '),
-    changes: targets.slice(0, 12).map(e => ({ type: 'delete', uid: e.uid, comment: e.comment || '' }))
+    summary: '已删除 ' + result.deletedUids.length + ' 条 (UID ' + dStr + ')',
+    detail: '已删除 UID: ' + result.deletedUids.join(', '),
+    changes: targets.filter(e => result.deletedUids.includes(e.uid)).slice(0, 12).map(e => ({ type: 'delete', uid: e.uid, comment: e.comment || '' }))
   };
 }
 
 function toolBatchEdit({ filter, fields }) {
-  let list = applyEntryFilter(getAllEntries(), filter);
+  const list = applyEntryFilter(getAllEntries(), filter);
   if (list.length === 0) return { summary: '无匹配条目', detail: '筛选条件未匹配到任何条目，未做修改' };
-  snapshotForUndo('批量修改 ' + list.length + ' 条');
+  const patch = {};
   const changed = [];
   const ignored = [];
   for (const [k, v] of Object.entries(fields || {})) {
     if (k === 'uid') continue;
     const nv = normalizeEntryFieldValue(k, v);
     if (nv === undefined) { ignored.push(k); continue; }
+    patch[k] = nv;
     changed.push(k);
-    for (const e of list) e[k] = nv;
   }
+  if (!changed.length) return { summary: '没有可修改的合法字段', detail: '传入字段均不在白名单内或为空：' + ignored.join(', ') };
+  const result = runWorldBookCommand({
+    type: CommandType.PATCH_ENTRIES,
+    patches: list.map(e => ({ uid: e.uid, patch }))
+  }, { label: '批量修改 ' + list.length + ' 条' });
+  if (!result.changed) return { summary: '匹配条目无需修改', detail: '目标字段已经是请求值' };
   renderSidebar();
-  if (currentUid) {
+  if (currentUid != null) {
     const current = entries.find(e => e.uid === currentUid);
-    if (current) renderEditor(current);
+    if (current && result.affectedUids.includes(current.uid)) renderEditor(current);
   }
   scheduleSave();
   const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
   return {
-    summary: '已批量修改 ' + list.length + ' 条',
-    detail: '修改字段: ' + changed.join(', ') + '，影响 ' + list.length + ' 条' + ignoreNote,
-    changes: list.slice(0, 12).map(e => ({ type: 'edit', uid: e.uid, comment: e.comment || '', detail: changed.join(',') }))
+    summary: '已批量修改 ' + result.affectedUids.length + ' 条',
+    detail: '修改字段: ' + changed.join(', ') + '，影响 ' + result.affectedUids.length + ' 条' + ignoreNote,
+    changes: list.filter(e => result.affectedUids.includes(e.uid)).slice(0, 12).map(e => ({ type: 'edit', uid: e.uid, comment: e.comment || '', detail: changed.join(',') }))
   };
 }
 
@@ -2761,7 +2771,6 @@ function toolReplaceText({ find, replace, fields, uid, filter, regex, ignore_cas
     re = new RegExp(regex ? find : escapeRegExp(find), flags);
   } catch (e) { return { summary: '正则无效', detail: e.message }; }
 
-  // 选定目标条目
   let targets;
   if (uid != null) {
     const e = getAllEntries().find(x => x.uid === uid);
@@ -2772,45 +2781,55 @@ function toolReplaceText({ find, replace, fields, uid, filter, regex, ignore_cas
   }
   if (!targets.length) return { summary: '无匹配条目', detail: '筛选条件未匹配到任何条目' };
 
-  const countIn = (str) => { const m = String(str).match(re); return m ? m.length : 0; };
-  const doRepl = (str) => regex ? str.replace(re, replace) : str.replace(re, () => replace);
+  const countIn = (str) => {
+    re.lastIndex = 0;
+    const m = String(str).match(re);
+    re.lastIndex = 0;
+    return m ? m.length : 0;
+  };
+  const doRepl = (str) => {
+    re.lastIndex = 0;
+    const out = regex ? String(str).replace(re, replace) : String(str).replace(re, () => replace);
+    re.lastIndex = 0;
+    return out;
+  };
 
-  let total = 0, affected = 0;
+  let total = 0;
   const pending = [];
   for (const e of targets) {
     let hit = 0;
+    const patch = {};
     for (const col of cols) {
       if (col === 'key') {
         const arr = Array.isArray(e.key) ? e.key : [];
-        for (const k of arr) hit += countIn(k);
+        const colHits = arr.reduce((sum, k) => sum + countIn(k), 0);
+        if (colHits > 0) patch.key = arr.map(k => doRepl(k)).filter(k => k !== '');
+        hit += colHits;
       } else if (typeof e[col] === 'string') {
-        hit += countIn(e[col]);
+        const colHits = countIn(e[col]);
+        if (colHits > 0) patch[col] = doRepl(e[col]);
+        hit += colHits;
       }
     }
-    if (hit > 0) { pending.push(e); total += hit; affected++; }
+    if (hit > 0) { pending.push({ entry: e, patch }); total += hit; }
   }
   if (total === 0) return { summary: '未找到「' + find + '」', detail: '在 ' + targets.length + ' 条目的 ' + cols.join('/') + ' 中没有匹配' };
 
-  snapshotForUndo('替换「' + find + '」→「' + replace + '」(' + affected + ' 条)');
-  for (const e of pending) {
-    for (const col of cols) {
-      if (col === 'key') {
-        if (Array.isArray(e.key)) e.key = e.key.map(k => doRepl(k)).filter(k => k !== '');
-      } else if (typeof e[col] === 'string') {
-        e[col] = doRepl(e[col]);
-      }
-    }
-  }
-  if (currentUid != null && pending.some(e => e.uid === currentUid)) {
+  const result = runWorldBookCommand({
+    type: CommandType.PATCH_ENTRIES,
+    patches: pending.map(item => ({ uid: item.entry.uid, patch: item.patch }))
+  }, { label: '替换「' + find + '」→「' + replace + '」(' + pending.length + ' 条)' });
+  if (!result.changed) return { summary: '替换后没有实际变化', detail: '匹配结果与原值一致' };
+  if (currentUid != null && result.affectedUids.includes(currentUid)) {
     const cur = entries.find(e => e.uid === currentUid);
     if (cur) renderEditor(cur);
   }
   renderSidebar();
   scheduleSave();
   return {
-    summary: '已替换 ' + total + ' 处，影响 ' + affected + ' 条',
-    detail: '在 ' + cols.join('/') + ' 把「' + find + '」替换为「' + replace + '」' + (regex ? '（正则）' : '') + '，共 ' + total + ' 处 / ' + affected + ' 个条目',
-    changes: pending.slice(0, 12).map(e => ({ type: 'edit', uid: e.uid, comment: e.comment || '', detail: '替换「' + find + '」' }))
+    summary: '已替换 ' + total + ' 处，影响 ' + result.affectedUids.length + ' 条',
+    detail: '在 ' + cols.join('/') + ' 把「' + find + '」替换为「' + replace + '」' + (regex ? '（正则）' : '') + '，共 ' + total + ' 处 / ' + result.affectedUids.length + ' 个条目',
+    changes: pending.filter(item => result.affectedUids.includes(item.entry.uid)).slice(0, 12).map(item => ({ type: 'edit', uid: item.entry.uid, comment: item.entry.comment || '', detail: '替换「' + find + '」' }))
   };
 }
 
@@ -2823,7 +2842,6 @@ function toolManageKeys({ uid, add, remove, secondary }) {
   if (!addArr.length && !rmArr.length) return { summary: '无操作', detail: '需提供 add 或 remove 数组' };
   const field = secondary ? 'keysecondary' : 'key';
   const label = secondary ? '次要关键词' : '关键词';
-  snapshotForUndo('调整 #' + uid + ' 的' + label);
   let arr = Array.isArray(e[field]) ? e[field].slice() : [];
   let added = 0, removed = 0;
   if (rmArr.length) {
@@ -2833,7 +2851,8 @@ function toolManageKeys({ uid, add, remove, secondary }) {
     removed = before - arr.length;
   }
   for (const k of addArr) { if (!arr.includes(k)) { arr.push(k); added++; } }
-  e[field] = arr;
+  const result = runWorldBookCommand({ type: CommandType.PATCH_ENTRY, uid, patch: { [field]: arr } }, { label: '调整 #' + uid + ' 的' + label });
+  if (!result.changed) return { summary: '无实际变化', detail: '#' + uid + ' 的' + label + '无需修改' };
   if (currentUid === uid) renderEditor(e);
   renderSidebar();
   scheduleSave();
@@ -2850,10 +2869,11 @@ function toolMoveEntry({ uid, position, depth }) {
   if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
   if (typeof position !== 'number') return { summary: 'position 须为数字', detail: '收到的 position: ' + position };
   const names = { 0: '角色定义前', 1: '角色定义后', 2: '作者注释前', 3: '作者注释后', 4: '@深度' };
-  snapshotForUndo('移动位置 #' + uid);
-  e.position = position;
+  const patch = { position };
   let extra = '';
-  if (position === 4 && typeof depth === 'number') { e.depth = depth; extra = '，深度 ' + depth; }
+  if (position === 4 && typeof depth === 'number') { patch.depth = depth; extra = '，深度 ' + depth; }
+  const result = runWorldBookCommand({ type: CommandType.PATCH_ENTRY, uid, patch }, { label: '移动位置 #' + uid });
+  if (!result.changed) return { summary: '#' + uid + ' 位置无需修改', detail: 'position/depth 已是目标值' };
   if (currentUid === uid) renderEditor(e);
   renderSidebar();
   scheduleSave();
@@ -2880,8 +2900,9 @@ function toolList({ filter, limit } = {}) {
 function toolToggle({ uid, disable }) {
   const e = getAllEntries().find(e => e.uid === uid);
   if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  snapshotForUndo((e.disable ? '启用' : '禁用') + ' #' + uid);
-  e.disable = (disable === undefined || disable === null) ? !e.disable : !!disable;
+  const next = (disable === undefined || disable === null) ? !e.disable : !!disable;
+  const result = runWorldBookCommand({ type: CommandType.SET_ENTRY_FIELD, uids: [uid], field: 'disable', value: next }, { label: (next ? '禁用' : '启用') + ' #' + uid });
+  if (!result.changed) return { summary: '#' + uid + ' 状态无需修改', detail: '当前已是目标状态' };
   if (currentUid === uid) renderEditor(e);
   renderSidebar();
   scheduleSave();
@@ -2893,8 +2914,8 @@ function toolReorder({ uid, order }) {
   const e = getAllEntries().find(e => e.uid === uid);
   if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
   if (typeof order !== 'number') return { summary: 'order 须为数字', detail: '收到的 order: ' + order };
-  snapshotForUndo('调整顺序 #' + uid);
-  e.order = order;
+  const result = runWorldBookCommand({ type: CommandType.SET_ENTRY_FIELD, uids: [uid], field: 'order', value: order }, { label: '调整顺序 #' + uid });
+  if (!result.changed) return { summary: '#' + uid + ' order 无需修改', detail: 'order 已是 ' + order };
   if (currentUid === uid) renderEditor(e);
   renderSidebar();
   scheduleSave();
@@ -2902,18 +2923,15 @@ function toolReorder({ uid, order }) {
 }
 
 function toolDuplicate({ uid }) {
-  const src = getAllEntries().find(e => e.uid === uid);
-  if (!src) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  snapshotForUndo('复制 #' + uid);
-  const newUid = nextUid();
-  const copy = JSON.parse(JSON.stringify(src));
-  copy.uid = newUid;
-  copy.comment = (src.comment || '') + ' (副本)';
-  worldBook.entries[uidKey(newUid)] = copy;
-  entries.push(copy);
+  const srcEntry = getAllEntries().find(e => e.uid === uid);
+  if (!srcEntry) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
+  const result = runWorldBookCommand({ type: CommandType.DUPLICATE_ENTRY, sourceUid: uid }, { label: '复制 #' + uid });
+  if (!result.changed) return { summary: '复制失败', detail: '没有创建副本' };
+  const newUid = result.createdUids[0];
+  const copy = entries.find(e => e.uid === newUid);
   renderSidebar();
   scheduleSave();
-  return { summary: '已复制 #' + uid + ' → #' + newUid, detail: '新副本 UID: ' + newUid + '（标题: ' + copy.comment + '）', changes: [{ type: 'add', uid: newUid, comment: copy.comment || '', detail: '复制自 #' + uid }] };
+  return { summary: '已复制 #' + uid + ' → #' + newUid, detail: '新副本 UID: ' + newUid + '（标题: ' + ((copy && copy.comment) || '') + '）', changes: [{ type: 'add', uid: newUid, comment: (copy && copy.comment) || '', detail: '复制自 #' + uid }] };
 }
 
 // ===== 合并条目 =====
@@ -2921,69 +2939,43 @@ function toolMergeEntries({ uids, keep }) {
   const list = getAllEntries();
   const targets = (Array.isArray(uids) ? uids : []).map(u => list.find(e => e.uid === u)).filter(Boolean);
   if (targets.length < 2) return { summary: '合并失败', detail: '需要至少 2 个存在的 UID，传入: ' + JSON.stringify(uids) };
-  const keepTarget = (keep != null && targets.some(t => t.uid === keep)) ? targets.find(t => t.uid === keep) : targets[0];
-  const rest = targets.filter(t => t !== keepTarget);
-  snapshotForUndo('合并条目 ' + targets.map(t => '#' + t.uid).join('+'));
-  // 正文拼接（去重段落标题），关键词并集，字段取 keep 的
-  const contentParts = [];
-  for (const t of targets) {
-    const c = String(t.content || '').trim();
-    if (c && !contentParts.includes(c)) contentParts.push(c);
-  }
-  keepTarget.content = contentParts.join('\n\n');
-  const keySet = new Set((Array.isArray(keepTarget.key) ? keepTarget.key : []).map(k => String(k)));
-  for (const t of rest) {
-    for (const k of (Array.isArray(t.key) ? t.key : [])) keySet.add(String(k));
-  }
-  keepTarget.key = [...keySet];
-  keepTarget.comment = keepTarget.comment || (rest[0] && rest[0].comment) || '合并条目';
-  for (const t of rest) {
-    delete worldBook.entries[uidKey(t.uid)];
-    const idx = entries.indexOf(t);
-    if (idx >= 0) entries.splice(idx, 1);
-  }
+  const keepUid = (keep != null && targets.some(t => t.uid === keep)) ? keep : targets[0].uid;
+  const result = runWorldBookCommand({ type: CommandType.MERGE_EXISTING_ENTRIES, uids: targets.map(t => t.uid), keep: keepUid }, { label: '合并条目 ' + targets.map(t => '#' + t.uid).join('+') });
+  if (!result.changed) return { summary: '合并失败', detail: '目标条目不足或没有变化' };
+  const kept = entries.find(e => e.uid === result.keptUid);
   renderSidebar();
+  if (currentUid != null && result.deletedUids.includes(currentUid)) selectEntry(result.keptUid);
   scheduleSave();
   return {
-    summary: '已合并 ' + targets.length + ' 条 → #' + keepTarget.uid + '「' + keepTarget.comment + '」',
-    detail: '保留 #' + keepTarget.uid + '，删除 ' + rest.map(t => '#' + t.uid).join('、') + '；关键词合并为: ' + (keepTarget.key.length ? keepTarget.key.join('、') : '(无)') + '。可 undo_last 回退。',
+    summary: '已合并 ' + targets.length + ' 条 → #' + result.keptUid + '「' + ((kept && kept.comment) || '') + '」',
+    detail: '保留 #' + result.keptUid + '，删除 ' + result.deletedUids.map(uid => '#' + uid).join('、') + '；关键词合并为: ' + ((kept && kept.key && kept.key.length) ? kept.key.join('、') : '(无)') + '。可 undo_last 回退。',
     changes: [
-      { type: 'merge', uid: keepTarget.uid, comment: keepTarget.comment || '', detail: '合并 ' + targets.length + ' 条' },
-      ...rest.slice(0, 11).map(t => ({ type: 'delete', uid: t.uid, comment: t.comment || '' }))
+      { type: 'merge', uid: result.keptUid, comment: (kept && kept.comment) || '', detail: '合并 ' + targets.length + ' 条' },
+      ...targets.filter(t => result.deletedUids.includes(t.uid)).slice(0, 11).map(t => ({ type: 'delete', uid: t.uid, comment: t.comment || '' }))
     ]
   };
 }
 
 // ===== 拆分条目 =====
 function toolSplitEntry({ uid, parts }) {
-  const src = getAllEntries().find(e => e.uid === uid);
-  if (!src) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
+  const srcEntry = getAllEntries().find(e => e.uid === uid);
+  if (!srcEntry) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
   const list = Array.isArray(parts) ? parts.filter(p => p && String(p.comment || '').trim() && String(p.content || '').trim()) : [];
   if (list.length < 2) return { summary: '拆分失败', detail: 'parts 至少需要 2 个含标题和正文的条目' };
-  snapshotForUndo('拆分 #' + uid);
-  delete worldBook.entries[uidKey(uid)];
-  const idx = entries.indexOf(src);
-  if (idx >= 0) entries.splice(idx, 1);
-  const created = [];
-  for (const p of list) {
-    const newUid = nextUid();
-    const copy = JSON.parse(JSON.stringify(src));
-    copy.uid = newUid;
-    copy.comment = String(p.comment).trim();
-    copy.content = String(p.content).trim();
-    copy.key = Array.isArray(p.key) ? p.key.map(k => String(k)) : (Array.isArray(src.key) ? [...src.key] : []);
-    worldBook.entries[uidKey(newUid)] = copy;
-    entries.push(copy);
-    created.push(newUid);
-  }
+  const result = runWorldBookCommand({ type: CommandType.SPLIT_ENTRY, sourceUid: uid, parts: list }, { label: '拆分 #' + uid });
+  if (!result.changed) return { summary: '拆分失败', detail: '条目未发生变化' };
   renderSidebar();
+  if (currentUid === uid) {
+    if (result.createdUids.length) selectEntry(result.createdUids[0]);
+    else renderEditorEmpty();
+  }
   scheduleSave();
   return {
-    summary: '已拆分 #' + uid + ' → ' + created.length + ' 条',
-    detail: '新条目 UID: ' + created.join('、') + '（可 undo_last 回退）',
+    summary: '已拆分 #' + uid + ' → ' + result.createdUids.length + ' 条',
+    detail: '新条目 UID: ' + result.createdUids.join('、') + '（可 undo_last 回退）',
     changes: [
-      { type: 'split', uid, comment: src.comment || '', detail: '拆为 ' + created.length + ' 条' },
-      ...created.slice(0, 12).map(uid => ({ type: 'add', uid, comment: (entries.find(x => x.uid === uid) || {}).comment || '' }))
+      { type: 'split', uid, comment: srcEntry.comment || '', detail: '拆为 ' + result.createdUids.length + ' 条' },
+      ...result.createdUids.slice(0, 12).map(newUid => ({ type: 'add', uid: newUid, comment: (entries.find(x => x.uid === newUid) || {}).comment || '' }))
     ]
   };
 }
