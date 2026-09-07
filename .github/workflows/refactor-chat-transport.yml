@@ -1,11 +1,11 @@
-name: Refactor chat transport
+name: Refactor chat migrations
 
 on:
   push:
     branches:
       - refactor/lore-atlas-v2
     paths:
-      - scripts/refactor-chat-transport.mjs
+      - scripts/refactor-chat-*.mjs
 
 permissions:
   contents: write
@@ -23,8 +23,12 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Apply transport extraction
-        run: node scripts/refactor-chat-transport.mjs
+      - name: Apply guarded chat migrations
+        run: |
+          node scripts/refactor-chat-transport.mjs
+          if [ -f scripts/refactor-chat-mutations.mjs ]; then
+            node scripts/refactor-chat-mutations.mjs
+          fi
       - name: Regression tests
         run: npm test
       - name: Commit generated refactor
@@ -36,5 +40,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add public/modules/chat.js
-          git commit -m "refactor(ai): route chat through transport module"
+          git commit -m "refactor(ai): route chat mutations through commands"
           git push origin HEAD:refactor/lore-atlas-v2
