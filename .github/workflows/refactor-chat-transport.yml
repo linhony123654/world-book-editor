@@ -1,0 +1,40 @@
+name: Refactor chat transport
+
+on:
+  push:
+    branches:
+      - refactor/lore-atlas-v2
+    paths:
+      - scripts/refactor-chat-transport.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/lore-atlas-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Apply transport extraction
+        run: node scripts/refactor-chat-transport.mjs
+      - name: Regression tests
+        run: npm test
+      - name: Commit generated refactor
+        run: |
+          if git diff --quiet; then
+            echo "No migration changes needed"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/modules/chat.js
+          git commit -m "refactor(ai): route chat through transport module"
+          git push origin HEAD:refactor/lore-atlas-v2
