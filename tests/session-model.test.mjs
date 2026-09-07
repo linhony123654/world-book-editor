@@ -18,7 +18,7 @@ import {
 
 test('createSession preserves legacy shape and deterministic id format', () => {
   const session = createSession({ now: 1000, random: 0.123456 });
-  assert.equal(session.id, 'srs4fzzyo');
+  assert.equal(session.id, 'srs4fzyo');
   assert.equal(session.title, '新对话');
   assert.deepEqual(session.messages, []);
   assert.deepEqual(session.memory, emptyMemory());
