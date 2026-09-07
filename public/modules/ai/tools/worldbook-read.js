@@ -167,7 +167,6 @@ export function checkEntries(list) {
     }
   }
 
-  const emittedShared = new Set();
   for (const entry of source) {
     const tag = '#' + entry.uid + '「' + (entry.comment || '(无标题)') + '」';
     const active = !entry.disable;
@@ -179,9 +178,6 @@ export function checkEntries(list) {
       if (k.length <= 1) issues.push('[关键词过短] ' + tag + ' 关键词「' + k + '」只有 ' + k.length + ' 个字，容易误触发');
       const holders = (byKey.get(k.toLowerCase()) || []).filter(uid => uid !== entry.uid && !source.find(x => x.uid === uid)?.disable);
       for (const h of holders) {
-        const pairKey = [entry.uid, h].sort((a, b) => a - b).join(':') + ':' + k.toLowerCase();
-        if (emittedShared.has(pairKey)) continue;
-        emittedShared.add(pairKey);
         const other = source.find(x => x.uid === h);
         const sim = contentSimilarity(entry.content, other && other.content);
         if (sim > 0.45) {
