@@ -16,8 +16,8 @@ import { streamFetch, streamSSE } from './ai/transport.js';
 import { runWorldBookCommand } from './domain/command-runtime.js';
 import { CommandType } from './domain/worldbook-commands.js';
 import { getTools } from './ai/tools/definitions.js';
-import { parseTextToolCalls, stripToolCalls } from './ai/tools/text-tool-parser.js';
-import { countMessagesTokens, trimToBudget, truncateToolDetail } from './ai/conversation/budget.js';
+import { countMessagesTokens, trimToBudget } from './ai/conversation/budget.js';
+import { runConversationTurn } from './ai/conversation/engine.js';
 import { formatChatText } from './ai/ui/markdown.js';
 import { applyEntryFilter as filterEntries, searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers, bookInfo as buildBookInfo } from './ai/tools/worldbook-read.js';
 
@@ -1169,10 +1169,6 @@ const STREAM_TIMEOUT_MS = 120000;   // 主对话流式请求超时（超时自�
 const TOKEN_BUDGET = 16000;         // 每轮请求上下文 token 预算（超预算两档降级）
 let lastTokensTotal = 0;            // 最近一轮实际发送的上下文估算（写入 assistant 消息，按钮行显示）
 
-function genToolCallId() {
-  return 'call_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-}
-
 // 单个工具执行异常隔离：出错时把错误消息作为结果返回给模型，继续后续工具
 const MUTATING_TOOL_NAMES = new Set([
   'edit_entry', 'add_entry', 'add_entries', 'create_smart_entry',
@@ -1241,6 +1237,7 @@ async function sendChat(prevText) {
     { role: 'system', content: systemMsg },
     ...chatMessages
   ];
+
   // 上下文 token 预算：超预算时两档降级（压缩记忆注入 → 折叠最旧历史），控制成本与延迟
   let budgetLevel = 0; // 0 正常 / 1 压缩注入 / 2 折叠历史
   if (countMessagesTokens(messages) > TOKEN_BUDGET) {
@@ -1256,140 +1253,95 @@ async function sendChat(prevText) {
       budgetLevel = 1;
     }
   }
-  // 本轮上下文估算：写入 assistant 回复消息，按钮行显示为 token 标签
   lastTokensTotal = countMessagesTokens(messages);
   void budgetLevel;
 
   // 流开始时的会话/世界书快照：提交结果前校验，防止写进切换后的会话/书本
   const sessionIdAtStart = activeSessionId;
   const bookIdAtStart = currentBookId;
-  // 本回合内 AI 调用了哪些工具及结果摘要，用于生成自然语言记忆。
-  const turnTrace = [];
-  // 本回合的条目级改动（新增/修改/删除），用于渲染「本轮改动」卡片与一键撤销
-  const turnChanges = [];
-  turnUndoBase = -1; // -1 = 本回合尚无改写工具执行（首个工具执行时打「回合开始」快照）
+  turnUndoBase = -1; // 首个真正写工具执行时由 safeExecuteTool 建立 AI 回合回滚边界
   setSendBusy(true);
+
   try {
-    for (let round = 0; round < MAX_ROUNDS; round++) {
-      // 每次请求独立 AbortController + 120s 超时；超时/切换会话都会 abort 并复位 UI
-      const controller = new AbortController();
-      const timer = setTimeout(() => {
-        if (activeChatAbort && activeChatAbort.controller === controller) activeChatAbort.reason = 'timeout';
-        try { controller.abort(); } catch (e) {}
-      }, STREAM_TIMEOUT_MS);
-      activeChatAbort = { controller, reason: null, sessionId: sessionIdAtStart };
-      let resp, msgEl, result;
-      try {
-        resp = await streamFetch(apiUrl, apiKey, { model, messages, tools: getTools(), tool_choice: 'auto' }, controller.signal);
-        msgEl = createAssistantBubble();
-        result = await streamDisplay(resp, msgEl);
-      } finally {
-        clearTimeout(timer);
-        // 注意：这里不清 activeChatAbort，让外层 catch 能读到超时/切换原因，由外层 finally 统一清理
+    const outcome = await runConversationTurn({
+      messages,
+      maxRounds: MAX_ROUNDS,
+
+      // Transport + streaming UI stay in chat.js as an adapter. The engine only receives
+      // the parsed round result plus an opaque context handle for presentation callbacks.
+      requestRound: async ({ messages: roundMessages }) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+          if (activeChatAbort && activeChatAbort.controller === controller) activeChatAbort.reason = 'timeout';
+          try { controller.abort(); } catch (e) {}
+        }, STREAM_TIMEOUT_MS);
+        activeChatAbort = { controller, reason: null, sessionId: sessionIdAtStart };
+        try {
+          const response = await streamFetch(
+            apiUrl,
+            apiKey,
+            { model, messages: roundMessages, tools: getTools(), tool_choice: 'auto' },
+            controller.signal
+          );
+          const msgEl = createAssistantBubble();
+          const result = await streamDisplay(response, msgEl);
+          return { result, context: msgEl };
+        } finally {
+          clearTimeout(timer);
+          // activeChatAbort intentionally stays readable until the outer catch/finally.
+        }
+      },
+
+      executeTool: safeExecuteTool,
+
+      onToolAssistant: async ({ aiText, result, context: msgEl }) => {
+        if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
+        else if (!hasVisibleAssistantStream(result.content, result.reasoning) && msgEl && msgEl.parentElement) msgEl.parentElement.remove();
+      },
+
+      onToolResult: async ({ name, result }) => {
+        appendChatMessage('tool', name + ': ' + result.summary);
       }
+    });
 
-      const textToolCalls = parseTextToolCalls(result.content || '');
-      console.log('[WBE] round', round, 'tool_calls:', result.tool_calls ? result.tool_calls.length : 0, 'textToolCalls:', textToolCalls.length);
+    if (outcome.status === 'preview-stop') {
+      const call = outcome.previewCall || { name: '', args: {} };
+      const previewText = outcome.mode === 'native'
+        ? '已生成预览「' + (draftTitleOf(call.name, call.args) || '草稿') + '」，请在弹窗中确认或取消。'
+        : '已生成预览，请在弹窗中确认或取消。';
+      chatMessages.push({ role: 'assistant', content: previewText });
+      trimHistory();
+      return;
+    }
 
-      if (result.tool_calls && result.tool_calls.length > 0) {
-        // ---- 原生 function calling ----
-        const aiText = stripToolCalls(result.content || '');
-        if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
-        else if (!hasVisibleAssistantStream(result.content, result.reasoning)) msgEl.parentElement.remove();
-
-        // 先补齐缺失的 tool_call id（占位 id），保证 assistant 消息与后续 tool 消息的
-        // tool_call_id 一一对应，避免上游 400
-        const calls = result.tool_calls.map(tc => {
-          if (!tc.id) tc.id = genToolCallId();
-          return tc;
-        });
-        messages.push({ role: 'assistant', content: result.content || null, tool_calls: calls });
-        for (const tc of calls) {
-          const callId = tc.id || genToolCallId(); // id 缺失时生成占位，避免上游 400
-          let args;
-          try {
-            args = JSON.parse(tc.function.arguments || '{}');
-          } catch (e) {
-            // 解析失败不静默吞掉：把错误信息返回给模型让它修正参数格式
-            const errDetail = '工具参数 JSON 解析失败: ' + (e && e.message || 'invalid JSON') +
-              '（参数原文: ' + String(tc.function.arguments || '').slice(0, 200) + '）。请修正参数格式后重新调用该工具。';
-            turnTrace.push(tc.function.name + ': 参数解析失败');
-            appendChatMessage('tool', tc.function.name + ': 参数解析失败');
-            messages.push({ role: 'tool', tool_call_id: callId, content: truncateToolDetail(errDetail) });
-            continue;
-          }
-          const r = await safeExecuteTool(tc.function.name, args);
-          turnTrace.push(tc.function.name + ': ' + r.summary);
-          if (r.changes && r.changes.length) turnChanges.push(...r.changes.map(c => ({ tool: tc.function.name, ...c })));
-          appendChatMessage('tool', tc.function.name + ': ' + r.summary);
-          // 原生 function calling 协议要求一个 tool_call_id 对应一条 tool 消息，不能合并；
-          // 用截断控制每条 detail 大小，控制整体膨胀
-          messages.push({ role: 'tool', tool_call_id: callId, content: truncateToolDetail(r.detail) });
-          if (r.stop) {
-            // 预览类工具（plan_smart_entry）：中断循环，等待用户在弹窗确认，禁止 AI 继续创建
-            chatMessages.push({ role: 'assistant', content: '已生成预览「' + (draftTitleOf(tc.function.name, args) || '草稿') + '」，请在弹窗中确认或取消。' });
-            trimHistory();
-            return;
-          }
-        }
-        continue; // 回到循环，AI 可继续调用工具或给出最终回复
-
-      } else if (textToolCalls.length > 0) {
-        // ---- 文本工具调用 fallback ----
-        const aiText = stripToolCalls(result.content || '');
-        if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
-        else if (!hasVisibleAssistantStream(result.content, result.reasoning)) msgEl.parentElement.remove();
-
-        // 同一轮的工具结果合并成一条消息，detail 逐条截断，避免消息条数与体积膨胀
-        const toolResultsText = [];
-        for (const tc of textToolCalls) {
-          const r = await safeExecuteTool(tc.name, tc.args);
-          turnTrace.push(tc.name + ': ' + r.summary);
-          if (r.changes && r.changes.length) turnChanges.push(...r.changes.map(c => ({ tool: tc.name, ...c })));
-          appendChatMessage('tool', tc.name + ': ' + r.summary);
-          toolResultsText.push(tc.name + ' 结果: ' + r.summary + '\n' + truncateToolDetail(r.detail));
-          if (r.stop) {
-            // 预览类工具：中断，等待用户确认
-            chatMessages.push({ role: 'assistant', content: '已生成预览，请在弹窗中确认或取消。' });
-            trimHistory();
-            return;
-          }
-        }
-
-        messages.push({ role: 'assistant', content: aiText || result.content || '' });
-        messages.push({ role: 'user', content: '工具执行结果:\n' + toolResultsText.join('\n\n') + '\n\n如需更多操作可继续调用工具，否则直接回复用户。' });
-        continue;
-
-      } else {
-        // ---- 最终回复 ----
-        const clean = stripToolCalls(result.content) || '(无回复)';
-        if (clean !== result.content) renderAssistantStream(msgEl, clean, result.reasoning, false);
-        // 流式期间可能已切换会话/清空对话：快照不匹配则丢弃结果，不写进错误会话
-        if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
-          import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
-          return;
-        }
-        chatMessages.push({ role: 'assistant', content: clean, tokens: lastTokensTotal });
-        accumulateSessionTokens();
-        trimHistory();
-        attachResendBtn(msgEl); // 重新生成按钮
-        // 本回合有实际改动 → 渲染「本轮改动」卡片（可跳转/一键撤销）
-        if (turnChanges.length) appendChangesCard(turnChanges);
-        // 分层记忆：记一条回合小总结，满阈值则后台整合大总结（不阻塞）
-        pushTurnMemory({ user: text, trace: turnTrace, reply: clean });
-        maybeRollup();
+    if (outcome.status === 'final') {
+      const clean = outcome.content;
+      const msgEl = outcome.context;
+      if (clean !== outcome.rawContent) renderAssistantStream(msgEl, clean, outcome.reasoning, false);
+      if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
+        import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
         return;
       }
+      chatMessages.push({ role: 'assistant', content: clean, tokens: lastTokensTotal });
+      accumulateSessionTokens();
+      trimHistory();
+      attachResendBtn(msgEl);
+      if (outcome.turnChanges.length) appendChangesCard(outcome.turnChanges);
+      pushTurnMemory({ user: text, trace: outcome.turnTrace, reply: clean });
+      maybeRollup();
+      return;
     }
+
     // 达到轮数上限也要把已发生的过程存进历史，否则这一整轮全丢
     if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
       import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
       return;
     }
-    chatMessages.push({ role: 'assistant', content: '(本回合操作较多未给出总结)', tokens: lastTokensTotal });
+    const fallbackReply = '(本回合操作较多未给出总结)';
+    chatMessages.push({ role: 'assistant', content: fallbackReply, tokens: lastTokensTotal });
     accumulateSessionTokens();
     trimHistory();
-    pushTurnMemory({ user: text, trace: turnTrace, reply: '(本回合操作较多未给出总结)' });
+    pushTurnMemory({ user: text, trace: outcome.turnTrace, reply: fallbackReply });
     maybeRollup();
     appendChatMessage('error', '已达最大工具调用轮数(' + MAX_ROUNDS + ')，已停止。');
   } catch (e) {
@@ -1397,10 +1349,8 @@ async function sendChat(prevText) {
     if (aborted) {
       const reason = activeChatAbort ? activeChatAbort.reason : null;
       if (reason === 'switch') {
-        // 切换会话/清空对话主动中断：不污染新会话，只轻提示
         import('./utils.js').then(m => m.showToast('已停止当前回复', 'info'));
       } else if (reason === 'user') {
-        // 用户手动点「停止」中断
         import('./utils.js').then(m => m.showToast('已停止生成', 'info'));
       } else {
         import('./utils.js').then(m => m.showToast('请求超时，已自动停止', 'error'));
@@ -1411,8 +1361,8 @@ async function sendChat(prevText) {
       if (turnStillActive(sessionIdAtStart, bookIdAtStart)) appendChatMessage('error', '请求失败: ' + e.message);
     }
   } finally {
-    if (activeChatAbort) activeChatAbort = null; // 清理在途引用，避免悬挂
-    setSendBusy(false); // abort/超时后恢复 UI：按钮可用、isSending 复位
+    if (activeChatAbort) activeChatAbort = null;
+    setSendBusy(false);
   }
 }
 
