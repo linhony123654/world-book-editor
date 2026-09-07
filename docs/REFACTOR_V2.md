@@ -2,133 +2,160 @@
 
 ## Goal
 
-Refactor the interface from a 430px magazine-shaped application into a responsive lore workspace while progressively separating domain mutations from UI, AI orchestration and persistence.
+Refactor the interface from a 430px magazine-shaped application into a responsive lore workspace while preserving the proven World Book JSON model, SQLite persistence, authentication, AI proxy contracts, import/export and version history.
 
-The core compatibility contract remains stable: World Book JSON, SQLite data, auth, API payloads, import/export and version history are not being destructively migrated.
+The work is staged behind stable interfaces so presentation, domain and AI orchestration risks can be validated independently.
 
-## Phase A — Visual workspace refactor
+## Phase A — Workspace / visual system
 
-### Design system architecture
+The interface has been rebuilt as a responsive **Lore Atlas / editorial archive workspace**.
 
-`public/style.css` is reduced to an import manifest. Styling is split into:
+- `public/style.css` is now an import manifest rather than a monolith.
+- Styling is separated into tokens, base, shell, library, editor, chat, surfaces, compatibility and responsive layers.
+- Desktop >=1080px becomes a persistent workspace rather than a centered phone shell.
+- Library behaves as a World Index; Editor becomes writing canvas + sticky inspector; AI becomes a wider editorial working document.
+- Mobile preserves bottom navigation, sequential editing and bottom-sheet interaction.
+- Existing DOM IDs and runtime contracts remain compatible.
 
-- `styles/tokens.css` — semantic tokens, type stacks, light/dark palettes, motion constants.
-- `styles/base.css` — resets, focus, selection, global material texture and reduced-motion behavior.
-- `styles/shell.css` — app shell, masthead, navigation, login surface, toast.
-- `styles/library.css` — world overview, search, taxonomy filters, statistics, entry index/grid, batch mode.
-- `styles/editor.css` — writing canvas, keywords, inspector, advanced fields, actions.
-- `styles/chat.css` — AI document, reasoning, tool trace, change cards, composer.
-- `styles/surfaces.css` — archive, settings, profile, dialogs, memory, versions and diff surfaces.
-- `styles/compat.css` — legacy secondary surfaces that still share the new visual language.
-- `styles/responsive.css` — structural breakpoint transformations.
+## Phase B — Domain command architecture
 
-### Desktop workspace
+All migrated world-book mutations now share one command boundary:
 
-At >=1080px the application no longer renders as a centered phone:
+`Command -> Undo snapshot -> Apply -> live state sync -> domain event -> autosave`
 
-- bottom nav transforms into a persistent left rail;
-- Library becomes a two-field workspace: sticky world identity / live entry field;
-- Editor becomes writing canvas + sticky property inspector;
-- AI chat gets a wide editorial reading measure and floating composer;
-- modal sheets become centered dialogs.
+Core modules:
 
-### Mobile preservation
+- `public/modules/domain/worldbook-commands.js` — pure mutation semantics.
+- `public/modules/domain/command-runtime.js` — browser state / undo integration.
 
-Below desktop width:
+Supported command semantics include:
 
-- the existing bottom-navigation model is preserved;
-- dialogs remain bottom sheets;
-- editor reverts to a sequential composition;
-- entry grids collapse from two columns to one on narrow phones;
-- the visual identity remains intact instead of falling back to a generic mobile dashboard.
+- create / delete / duplicate entries;
+- field updates, single-entry patch and atomic patch-many;
+- primary / secondary keyword changes;
+- import merge with UID reassignment and duplicate skipping;
+- atomic merge-existing;
+- atomic split-entry.
 
-## Phase B — Domain command architecture (in progress)
+Migrated callers:
 
-The first engineering pass is now implemented under `public/modules/domain/`.
+- Editor create/delete/duplicate/field/keyword paths;
+- Library batch constant/enable/disable/delete;
+- import merge;
+- mutating AI tools in `chat.js`.
 
-### Pure command core
+AI turn rollback is deliberately distinct from per-command undo. Read-only AI tools no longer create fake undo snapshots.
 
-`worldbook-commands.js` owns mutation semantics without importing DOM, storage, autosave or UI code.
+## Phase C — AI module extraction
 
-Supported commands currently include:
+`chat.js` is being reduced from a catch-all module into orchestration over explicit AI boundaries.
 
-- create entry;
-- delete one/many entries;
-- duplicate entry;
-- set one field across one/many entries;
-- patch one/many entries atomically;
-- add/remove keywords;
-- import/merge incoming entries with UID reassignment and duplicate skipping;
-- merge existing entries atomically;
-- split an existing entry atomically.
+Extracted modules:
 
-Each command returns structured mutation metadata (`affectedUids`, `createdUids`, `deletedUids`, `structural`, etc.) instead of forcing callers to infer what changed.
+- `public/modules/ai/transport.js`
+  - OpenAI-compatible SSE parsing;
+  - local `/api/proxy/chat` streaming request.
+- `public/modules/ai/tools/definitions.js`
+  - canonical function-calling schemas;
+  - cached tool definition registry.
+- `public/modules/ai/tools/text-tool-parser.js`
+  - fallback parsing for gateways that emit textual tool calls;
+  - tool-call stripping from visible assistant text.
+- `public/modules/ai/tools/worldbook-read.js`
+  - pure search/filter/list;
+  - duplicate detection;
+  - health checks;
+  - trigger simulation;
+  - book summary analysis.
+- `public/modules/ai/conversation/budget.js`
+  - token estimation aggregation;
+  - history folding without orphaning tool results;
+  - tool-result truncation.
+- `public/modules/ai/ui/markdown.js`
+  - escaped Markdown rendering;
+  - URL protocol allow-list behavior.
 
-### Runtime bridge
+Mutating AI tools now translate AI arguments into the same World Book Commands used by human and batch editing. `chat.js` no longer directly writes `worldBook.entries[...]`.
 
-`command-runtime.js` is the browser-state bridge:
+## Regression protection
 
-`Command -> Undo snapshot -> Apply -> Synchronize live entries -> Domain event`
+Long-term CI is `.github/workflows/ci.yml` and runs `npm ci` + `npm test` on Node 22.
 
-This keeps the pure domain layer testable while preserving the current `state.js` live bindings and autosave behavior.
+Added architecture/regression suites cover:
 
-### Migrated callers
+- command UID and structural invariants;
+- no-op behavior and atomic patches;
+- merge / split semantics;
+- AI command-boundary enforcement;
+- SSE chunk parsing;
+- tool-schema / canonical-name synchronization;
+- textual tool-call parsing;
+- conversation budget pairing rules;
+- Markdown escaping and unsafe-link rejection;
+- read-only world-book search, diagnostics, trigger ordering and behavioral parity.
 
-The following paths now use the command runtime instead of directly editing `worldBook.entries`:
-
-- Editor: create / delete / duplicate / field controls / keyword controls;
-- Library: batch constant / enable / disable / delete;
-- Import: merge into current world book.
-
-High-frequency title/body typing also travels through the same command semantics, but deliberately uses `undo:false` so native textarea undo remains responsible for character-level editing.
-
-### Regression protection
-
-`tests/worldbook-commands.test.mjs` covers UID allocation, no-op detection, batch patching, merge behavior, deletion metadata and split behavior.
-
-`.github/workflows/ci.yml` runs `npm ci` and `npm test` on the refactor branch and pull requests.
+Temporary migration workflows/scripts used to safely rewrite the former ~160 KB `chat.js` are removed after their generated changes pass CI; they are not part of the product architecture.
 
 ## Compatibility invariants
 
-The refactor does **not** change:
+The refactor currently preserves:
 
-- World Book JSON schema;
-- entry field names;
+- World Book JSON schema and entry field names;
 - `/api/books` request/response formats;
-- auth tokens;
-- AI proxy formats;
+- auth token behavior;
+- AI proxy wire formats;
 - localStorage keys;
 - SQLite tables/data;
 - version/history persistence semantics;
 - import/export file format.
 
-## Next engineering gates
+## Remaining engineering gates
 
-### Gate 1 — AI mutations
+### Gate 1 — Conversation / tool execution boundaries
 
-Move the mutating portions of `chat.js` onto the same command layer. Read-only tools can stay independent. Composite AI actions such as merge/split/replace must remain one atomic undo operation.
+Split the remaining `chat.js` responsibilities behind dependency-injected interfaces:
 
-The AI turn-level rollback boundary will be separated from individual command snapshots so read-only tool calls do not create fake undo history.
+- conversation turn engine / tool loop;
+- mutating tool executor adapters;
+- world-book-level tools;
+- smart-draft orchestration.
 
-### Gate 2 — AI orchestration split
+### Gate 2 — Session and memory boundaries
 
-After mutation parity is verified, split `chat.js` behind stable interfaces:
+Extract:
 
-- stream / SSE transport;
-- conversation engine and tool loop;
-- world-book tools;
-- memory/session persistence;
-- message rendering and Markdown;
-- smart-draft flow.
+- session repository and active-session lifecycle;
+- memory persistence / migration;
+- rollup summarization;
+- auxiliary completion requests and title generation.
 
-### Gate 3 — Application shell
+### Gate 3 — Chat UI boundaries
 
-Split `app.js` into boot lifecycle, navigation, settings, API profile/configuration, history and cloud/account features.
+Extract remaining DOM-specific concerns:
 
-### Gate 4 — Server boundaries
+- message rendering and editing actions;
+- reasoning stream view;
+- tool trace / change cards;
+- composer and scroll behavior.
 
-Split `server.js` into route/service/repository layers for auth, books, versions, AI proxy/search and cloud storage while keeping existing HTTP contracts unchanged.
+### Gate 4 — Application shell
 
-## Rule for the remaining refactor
+Split `app.js` into:
 
-Do not split code merely to reduce file size. A new module must own a coherent responsibility or establish a real boundary. Behavioral parity, data safety and rollback semantics take priority over directory aesthetics.
+- boot/navigation shell;
+- settings and API-profile management;
+- history/version orchestration;
+- account/cloud surfaces.
+
+### Gate 5 — Server boundaries
+
+Split `server.js` into route/service/repository boundaries for:
+
+- auth;
+- books;
+- versions;
+- AI proxy/search;
+- AI data/session persistence;
+- cloud/storage operations.
+
+HTTP and database contracts remain unchanged until dedicated migration tests exist.
