@@ -94,7 +94,7 @@ Added architecture/regression suites cover:
 - Markdown escaping and unsafe-link rejection;
 - read-only world-book search, diagnostics, trigger ordering and behavioral parity.
 
-Temporary migration workflows/scripts used to safely rewrite the former ~160 KB `chat.js` are removed after their generated changes pass CI; they are not part of the product architecture.
+Temporary migration workflows/scripts used to safely rewrite the former ~160 KB `chat.js` were removed after their generated changes passed CI; they are not part of the product architecture.
 
 ## Compatibility invariants
 
