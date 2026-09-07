@@ -1,5 +1,5 @@
 // ===== AI 聊天 =====
-import { escHtml, escAttr, escUrl, $, estimateTokens } from './utils.js';
+import { escHtml, escAttr, $ } from './utils.js';
 import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, setEntries, snapshotForUndo, restoreUndo, undoStackLength, restoreUndoTo } from './state.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
 import { renderEditor, renderEditorEmpty } from './editor.js';
@@ -17,6 +17,8 @@ import { runWorldBookCommand } from './domain/command-runtime.js';
 import { CommandType } from './domain/worldbook-commands.js';
 import { getTools } from './ai/tools/definitions.js';
 import { parseTextToolCalls, stripToolCalls } from './ai/tools/text-tool-parser.js';
+import { countMessagesTokens, trimToBudget, truncateToolDetail } from './ai/conversation/budget.js';
+import { formatChatText } from './ai/ui/markdown.js';
 
 // ===== 聊天状态 =====
 const chatMessages = [];
@@ -1089,96 +1091,6 @@ function renderAssistantStream(msgEl, content, reasoning, reasoningOpen = false)
   }
 }
 
-// ===== 格式化聊天文本（简单 markdown） =====
-function mdInline(s) {
-  // 已是转义后的文本，处理行内 markdown
-  s = s.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
-  // 链接 URL 必须经 escUrl 转义 + 协议白名单（http/https/mailto），
-  // 否则 AI 输出的 [x](https://a.com/"onmouseover="alert(1)) 可属性注入窃取 localStorage
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
-    const safeUrl = escUrl(url);
-    return safeUrl ? '<a href="' + safeUrl + '" target="_blank" rel="noopener">' + label + '</a>' : m;
-  });
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  s = s.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
-  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-  return s;
-}
-
-function formatChatText(text) {
-  if (!text) return '';
-  // 先抽出围栏代码块，避免被行级规则破坏
-  const blocks = [];
-  let src = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    blocks.push('<pre><code>' + escHtml(code.replace(/\n$/, '')) + '</code></pre>');
-    return ' B' + (blocks.length - 1) + ' ';
-  });
-
-  const lines = src.split('\n');
-  let html = '';
-  let listType = null; // 'ul' | 'ol'
-  const closeList = () => { if (listType) { html += '</' + listType + '>'; listType = null; } };
-  const splitRow = (s) => s.replace(/^\s*\|?/, '').replace(/\|?\s*$/, '').split('|').map(c => c.trim());
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    const ph = raw.match(/^ B(\d+) $/);
-    if (ph) { closeList(); html += blocks[+ph[1]]; continue; }
-
-    const line = raw;
-    if (/^\s*$/.test(line)) { closeList(); continue; }
-
-    // GFM 表格：当前行含 |，下一行是分隔行(---/:---:)
-    const next = lines[i + 1];
-    if (line.includes('|') && next && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(next) && next.includes('-')) {
-      closeList();
-      const headers = splitRow(line);
-      const aligns = splitRow(next).map(c => {
-        const l = c.startsWith(':'), r = c.endsWith(':');
-        return r && l ? 'center' : r ? 'right' : l ? 'left' : '';
-      });
-      const al = (c) => aligns[c] ? ' style="text-align:' + aligns[c] + '"' : '';
-      let tbl = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
-      headers.forEach((h, c) => { tbl += '<th' + al(c) + '>' + mdInline(escHtml(h)) + '</th>'; });
-      tbl += '</tr></thead><tbody>';
-      let j = i + 2;
-      for (; j < lines.length && lines[j].includes('|') && !/^\s*$/.test(lines[j]); j++) {
-        const cells = splitRow(lines[j]);
-        tbl += '<tr>';
-        for (let c = 0; c < headers.length; c++) tbl += '<td' + al(c) + '>' + mdInline(escHtml(cells[c] || '')) + '</td>';
-        tbl += '</tr>';
-      }
-      tbl += '</tbody></table></div>';
-      html += tbl;
-      i = j - 1;
-      continue;
-    }
-
-    let m;
-    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
-      closeList();
-      const lv = m[1].length;
-      html += '<h' + lv + ' class="md-h">' + mdInline(escHtml(m[2])) + '</h' + lv + '>';
-    } else if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(line)) {
-      closeList(); html += '<hr class="md-hr">';
-    } else if ((m = line.match(/^\s*>\s?(.*)$/))) {
-      closeList(); html += '<blockquote class="md-quote">' + mdInline(escHtml(m[1])) + '</blockquote>';
-    } else if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
-      if (listType !== 'ul') { closeList(); html += '<ul class="md-list">'; listType = 'ul'; }
-      html += '<li>' + mdInline(escHtml(m[1])) + '</li>';
-    } else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
-      if (listType !== 'ol') { closeList(); html += '<ol class="md-list">'; listType = 'ol'; }
-      html += '<li>' + mdInline(escHtml(m[1])) + '</li>';
-    } else {
-      closeList(); html += '<p class="md-p">' + mdInline(escHtml(line)) + '</p>';
-    }
-  }
-  closeList();
-  return html;
-}
-
 // ===== 聊天滚动 =====
 // 真正的滚动容器是 .app（chat 屏幕本身没有独立滚动条），
 // 所以不能再对 #chat-messages 设 scrollTop，否则不生效（回复不跟随到底的根因）。
@@ -1253,46 +1165,21 @@ function setSendBusy(busy) {
 // ===== sendChat =====
 const MAX_ROUNDS = 12;              // 工具调用轮数上限（原 25，平方级膨胀，降到 12 控制上下文）
 const STREAM_TIMEOUT_MS = 120000;   // 主对话流式请求超时（超时自动 abort 并复位 UI）
-const TOOL_DETAIL_MAX = 800;        // 工具结果 detail 注入上下文的最大长度（搜索类结果足够，控制上下文膨胀）
 const TOKEN_BUDGET = 16000;         // 每轮请求上下文 token 预算（超预算两档降级）
 let lastTokensTotal = 0;            // 最近一轮实际发送的上下文估算（写入 assistant 消息，按钮行显示）
-
-// 估算整组消息的 token 总数（含 tool_calls 的 JSON 序列化）
-function countMessagesTokens(messages) {
-  return (messages || []).reduce((s, m) =>
-    s + estimateTokens(m && m.content) + estimateTokens(m && m.tool_calls ? JSON.stringify(m.tool_calls) : ''), 0);
-}
-
-// 折叠最旧消息直到估算 ≤ 预算。安全规则：
-// 带 tool_calls 的 assistant 消息与其后续 tool 结果成对移除，避免破坏 function calling 协议。
-function trimToBudget(messages, budget) {
-  const system = messages[0];
-  const rest = messages.slice(1);
-  let total = countMessagesTokens(messages);
-  let folded = 0;
-  while (rest.length > 1 && total > budget) {
-    const removed = rest.shift();
-    if (removed && removed.role === 'assistant' && removed.tool_calls) {
-      while (rest.length && rest[0].role === 'tool') rest.shift();
-    }
-    folded++;
-    total = countMessagesTokens([system, ...rest]);
-  }
-  if (folded > 0) rest.unshift({ role: 'user', content: '（为控制上下文长度，较早的对话已折叠，无需回溯，继续当前任务即可）' });
-  return [system, ...rest];
-}
 
 function genToolCallId() {
   return 'call_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
-// 工具结果 detail 截断：防止全量进 messages 导致上下文平方级膨胀
-function truncateToolDetail(detail) {
-  const d = String(detail == null ? '' : detail);
-  return d.length > TOOL_DETAIL_MAX ? d.slice(0, TOOL_DETAIL_MAX) + '\n…(结果过长已截断)' : d;
-}
-
 // 单个工具执行异常隔离：出错时把错误消息作为结果返回给模型，继续后续工具
+const MUTATING_TOOL_NAMES = new Set([
+  'edit_entry', 'add_entry', 'add_entries', 'create_smart_entry',
+  'delete_entry', 'delete_entries', 'batch_edit', 'replace_text',
+  'manage_keys', 'move_entry', 'toggle_entry', 'reorder_entry',
+  'duplicate_entry', 'merge_entries', 'split_entry'
+]);
+
 const MUTATING_TOOL_NAMES = new Set([
   'edit_entry', 'add_entry', 'add_entries', 'create_smart_entry',
   'delete_entry', 'delete_entries', 'batch_edit', 'replace_text',
