@@ -101,3 +101,74 @@ test('merge reassigns incoming uids and optionally skips duplicates', () => {
   assert.deepEqual(result.createdUids, [6]);
   assert.equal(book.entries['6'].comment, 'New');
 });
+
+test('patch-many applies one atomic batch without touching unchanged entries', () => {
+  const book = bookOf([
+    { uid: 1, comment: 'A', content: 'one', constant: false },
+    { uid: 2, comment: 'B', content: 'two', constant: false },
+    { uid: 3, comment: 'C', content: 'three', constant: true }
+  ]);
+
+  const result = applyWorldBookCommand(book, {
+    type: CommandType.PATCH_ENTRIES,
+    patches: [
+      { uid: 1, patch: { content: 'ONE', constant: true } },
+      { uid: 2, patch: { content: 'two' } },
+      { uid: 999, patch: { content: 'missing' } }
+    ]
+  });
+
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.affectedUids, [1]);
+  assert.equal(book.entries['1'].content, 'ONE');
+  assert.equal(book.entries['1'].constant, true);
+  assert.equal(book.entries['2'].content, 'two');
+});
+
+test('merge-existing combines content and keyword union atomically', () => {
+  const book = bookOf([
+    { uid: 4, comment: '王城', content: '第一段', key: ['王城', '城门'] },
+    { uid: 7, comment: '王城补充', content: '第二段', key: ['王城', '夜禁'] },
+    { uid: 8, comment: '无关', content: '保留', key: ['其他'] }
+  ]);
+
+  const result = applyWorldBookCommand(book, {
+    type: CommandType.MERGE_EXISTING_ENTRIES,
+    uids: [4, 7],
+    keep: 4
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.structural, true);
+  assert.equal(result.keptUid, 4);
+  assert.deepEqual(result.deletedUids, [7]);
+  assert.equal(book.entries['4'].content, '第一段\n\n第二段');
+  assert.deepEqual(book.entries['4'].key, ['王城', '城门', '夜禁']);
+  assert.equal(book.entries['7'], undefined);
+  assert.equal(book.entries['8'].content, '保留');
+});
+
+test('split-entry deletes source and allocates sequential new uids', () => {
+  const book = bookOf([
+    { uid: 3, comment: '大条目', content: '原文', key: ['原词'], order: 100 },
+    { uid: 9, comment: '已有', content: '已有内容', key: [] }
+  ]);
+
+  const result = applyWorldBookCommand(book, {
+    type: CommandType.SPLIT_ENTRY,
+    sourceUid: 3,
+    parts: [
+      { comment: '上篇', content: '上篇正文' },
+      { comment: '下篇', content: '下篇正文', key: ['下篇词'] }
+    ]
+  });
+
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.deletedUids, [3]);
+  assert.deepEqual(result.createdUids, [10, 11]);
+  assert.equal(book.entries['3'], undefined);
+  assert.equal(book.entries['10'].comment, '上篇');
+  assert.deepEqual(book.entries['10'].key, ['原词']);
+  assert.deepEqual(book.entries['11'].key, ['下篇词']);
+  assert.equal(book.entries['11'].order, 100);
+});
