@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 
 // Temporary guarded migration: preserve legacy diagnostics exactly while moving them out of chat.js.
+// Safe to run repeatedly; already-migrated files are unchanged.
 const path = 'public/modules/ai/tools/worldbook-read.js';
 let src = fs.readFileSync(path, 'utf8');
 const lines = [
