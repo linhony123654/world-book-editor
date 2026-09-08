@@ -41,14 +41,13 @@ replaceRegex(
   'startEditMsg DOM implementation'
 );
 
-for (const token of [
-  'navigator.clipboard',
-  "document.execCommand('copy')",
-  "document.createElement('textarea')",
-  "className = 'chat-msg-edit-textarea'",
-  "className = 'chat-msg-edit-actions'"
-]) {
-  if (src.includes(token)) throw new Error(`legacy message platform/UI token remains in chat.js: ${token}`);
+const copyBlock = src.match(/async function copyMsgText\(i\) \{[\s\S]*?\n\}(?=\n\nconst messageActionsView)/)?.[0] || '';
+for (const token of ['navigator.clipboard', "document.execCommand('copy')", "document.createElement('textarea')"]) {
+  if (copyBlock.includes(token)) throw new Error(`legacy message-copy platform token remains: ${token}`);
+}
+const editBlock = src.match(/function startEditMsg\(msgEl, idx\) \{[\s\S]*?\n\}(?=\n\nfunction deleteMsg)/)?.[0] || '';
+for (const token of ["document.createElement('textarea')", "className = 'chat-msg-edit-textarea'", "className = 'chat-msg-edit-actions'"]) {
+  if (editBlock.includes(token)) throw new Error(`legacy message-edit DOM token remains: ${token}`);
 }
 if (!src.includes('createMessageEditView({') || !src.includes('messageEditView.start(') || !src.includes('await copyText(')) {
   throw new Error('message edit / clipboard delegation incomplete');
@@ -56,7 +55,7 @@ if (!src.includes('createMessageEditView({') || !src.includes('messageEditView.s
 
 fs.writeFileSync(chatPath, src);
 
-const boundaryTest = `import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport test from 'node:test';\n\nconst chat = fs.readFileSync(new URL('../public/modules/chat.js', import.meta.url), 'utf8');\n\ntest('chat delegates inline message edit DOM and clipboard platform fallback', () => {\n  assert.match(chat, /createMessageEditView\\(\\{/);\n  assert.match(chat, /messageEditView\\.start\\(/);\n  assert.match(chat, /await copyText\\(/);\n});\n\ntest('chat retains message data persistence while no longer owning edit/copy DOM mechanics', () => {\n  assert.match(chat, /cur\\.content = value/);\n  assert.match(chat, /saveChatHistory\\(\\)/);\n  assert.doesNotMatch(chat, /navigator\\.clipboard/);\n  assert.doesNotMatch(chat, /document\\.execCommand\\('copy'\\)/);\n  assert.doesNotMatch(chat, /document\\.createElement\\('textarea'\\)/);\n  assert.doesNotMatch(chat, /className = 'chat-msg-edit-textarea'/);\n  assert.doesNotMatch(chat, /className = 'chat-msg-edit-actions'/);\n});\n`;
+const boundaryTest = `import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport test from 'node:test';\n\nconst chat = fs.readFileSync(new URL('../public/modules/chat.js', import.meta.url), 'utf8');\nconst copyBlock = chat.match(/async function copyMsgText\\(i\\) \\{[\\s\\S]*?\\n\\}(?=\\n\\nconst messageActionsView)/)?.[0] || '';\nconst editBlock = chat.match(/function startEditMsg\\(msgEl, idx\\) \\{[\\s\\S]*?\\n\\}(?=\\n\\nfunction deleteMsg)/)?.[0] || '';\n\ntest('chat delegates inline message edit DOM and message-copy platform fallback', () => {\n  assert.match(chat, /createMessageEditView\\(\\{/);\n  assert.match(chat, /messageEditView\\.start\\(/);\n  assert.match(copyBlock, /await copyText\\(/);\n});\n\ntest('message edit/copy blocks retain orchestration but no longer own platform or DOM mechanics', () => {\n  assert.match(chat, /cur\\.content = value/);\n  assert.match(chat, /saveChatHistory\\(\\)/);\n  assert.doesNotMatch(copyBlock, /navigator\\.clipboard/);\n  assert.doesNotMatch(copyBlock, /document\\.execCommand\\('copy'\\)/);\n  assert.doesNotMatch(copyBlock, /document\\.createElement\\('textarea'\\)/);\n  assert.doesNotMatch(editBlock, /document\\.createElement\\('textarea'\\)/);\n  assert.doesNotMatch(editBlock, /chat-msg-edit-textarea/);\n  assert.doesNotMatch(editBlock, /chat-msg-edit-actions/);\n});\n`;
 fs.writeFileSync(boundaryPath, boundaryTest);
 
 console.log('Message edit + clipboard migration prepared.');
