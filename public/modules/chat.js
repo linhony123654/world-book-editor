@@ -28,6 +28,7 @@ import { createLegacyAiDataMigration } from './ai/session/migration.js';
 import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup, buildMemoryInjection as buildMemoryInjectionFromState, createTurnMemoryRecord, planRollup } from './ai/memory/policy.js';
 import { createAssistantStreamView } from './ai/ui/assistant-stream-view.js';
 import { createChatRenderer } from './ai/ui/chat-renderer.js';
+import { createChatComposer } from './ai/ui/chat-composer.js';
 import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
 
 // ===== 聊天状态 =====
@@ -547,32 +548,28 @@ function trimHistory() {
 }
 
 // ===== 初始化聊天（杂志风 AI 屏） =====
+let chatComposer = null;
+
 export function initChat() {
   const $btnSendChat = $('btn-send-chat');
   const $chatInput = $('chat-input');
   const $clear = $('chatClearBtn');
-
-  if ($btnSendChat) $btnSendChat.addEventListener('click', () => {
-    if (isSending) { abortActiveChat('user'); return; } // 生成中点击 → 停止
-    sendChat();
-  });
-
-  // 滚动跟随 + 「回到底部」浮钮（滚动容器是 .app）
   const scroller = getChatScroller();
-  if (scroller) scroller.addEventListener('scroll', updateToBottomBtn, { passive: true });
   const $toBottom = $('chatToBottom');
-  if ($toBottom) $toBottom.addEventListener('click', () => scrollChatToBottom());
 
-  if ($chatInput) {
-    $chatInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
-    });
-    // 自动撑高
-    $chatInput.addEventListener('input', () => {
-      $chatInput.style.height = 'auto';
-      $chatInput.style.height = Math.min($chatInput.scrollHeight, 120) + 'px';
-    });
-  }
+  if (chatComposer) chatComposer.dispose();
+  chatComposer = createChatComposer({
+    sendButton: $btnSendChat,
+    input: $chatInput,
+    scroller,
+    toBottomButton: $toBottom,
+    getIsSending: () => isSending,
+    onSend: () => sendChat(),
+    onStop: () => abortActiveChat('user'),
+    onScroll: updateToBottomBtn,
+    onToBottom: scrollChatToBottom
+  });
+  chatComposer.bind();
 
   // 记忆按钮 + 弹窗
   const $mem = $('chatMemoryBtn');
@@ -922,16 +919,8 @@ function createAssistantBubble() {
 // ===== 发送按钮忙碌态 =====
 let isSending = false;
 function setSendBusy(busy) {
-  isSending = busy;
-  const btn = $('btn-send-chat');
-  if (btn) {
-    btn.classList.toggle('is-busy', busy);
-    // 忙碌时按钮变为「停止」：保持可点击，点击即中断生成（spinner 图标复用现有样式）
-    btn.disabled = false;
-    btn.setAttribute('aria-label', busy ? '停止生成' : '发送');
-  }
-  const input = $('chat-input');
-  if (input) input.classList.toggle('sending', busy);
+  isSending = !!busy;
+  if (chatComposer) chatComposer.setBusy(isSending);
 }
 
 // ===== sendChat =====
@@ -967,7 +956,7 @@ async function sendChat(prevText) {
   if (!text) return;
   if (prevText == null) {
     input.value = '';
-    input.style.height = 'auto'; // 复位自动高度
+    if (chatComposer) chatComposer.resetInputHeight(); // 复位自动高度由 composer 管理
   }
 
   const apiUrl = localStorage.getItem('wbe-api-url');
