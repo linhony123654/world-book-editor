@@ -13,6 +13,7 @@ import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows, formatDeci
 import { clearActiveSmartDraft, createSmartDraftState, setActiveSmartDraft, takeActiveSmartDraft } from './smart-draft-state.js';
 import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, selectWritingTemplate, writingTemplateKey } from './writing-template.js';
 import { streamFetch, streamSSE } from './ai/transport.js';
+import { createAuxiliaryCompletionClient } from './ai/auxiliary-client.js';
 import { runWorldBookCommand } from './domain/command-runtime.js';
 import { CommandType } from './domain/worldbook-commands.js';
 import { getTools } from './ai/tools/definitions.js';
@@ -416,27 +417,16 @@ function renderMemoryList() {
 }
 
 // ===== 大总结：AI 浓缩（每满 ROLLUP_EVERY 条小总结，后台异步） =====
-// 附属 AI 请求（标题生成/记忆总结/正文补全/模板生成）统一带 60s 超时，避免上游挂起卡死
-const AUX_REQUEST_TIMEOUT_MS = 60000;
-
-async function fetchCompletion(messages, opts = {}) {
-  const apiUrl = opts.apiUrl || localStorage.getItem('wbe-api-url');
-  const apiKey = opts.apiKey || localStorage.getItem('wbe-api-key');
-  const model = opts.model || localStorage.getItem('wbe-model') || 'gpt-4o';
-  if (!apiUrl || !apiKey) throw new Error('未配置 API');
-  const controller = new AbortController();
-  const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, AUX_REQUEST_TIMEOUT_MS);
-  try {
-    const resp = await streamFetch(apiUrl, apiKey, { model, messages }, controller.signal);
-    let content = '';
-    for await (const chunk of streamSSE(resp)) {
-      const delta = chunk.choices?.[0]?.delta;
-      if (delta?.content) content += delta.content;
-    }
-    return content.trim();
-  } finally {
-    clearTimeout(timer);
-  }
+// 附属 AI 请求（标题生成/记忆总结/正文补全/模板生成）统一走独立 completion client。
+const auxiliaryCompletionClient = createAuxiliaryCompletionClient({
+  getConfig: () => ({
+    apiUrl: localStorage.getItem('wbe-api-url'),
+    apiKey: localStorage.getItem('wbe-api-key'),
+    model: localStorage.getItem('wbe-model') || 'gpt-4o'
+  })
+});
+function completeAuxiliary(messages, opts = {}) {
+  return auxiliaryCompletionClient.complete(messages, opts);
 }
 
 // ===== AI 会话标题：首条消息后异步生成，失败回退截取法 =====
@@ -450,7 +440,7 @@ async function maybeGenerateTitle() {
   const targetId = activeSessionId; // 快照：标题只写给发起时的会话，避免流式期间切换会话写错
   titleGenerating = true;
   try {
-    const text = await fetchCompletion([
+    const text = await completeAuxiliary([
       { role: 'system', content: '你是标题生成器。根据对话开头概括一个简洁的对话标题：不超过 10 个汉字，不要标点，不要引号，不要解释，直接输出标题。' },
       { role: 'user', content: '对话开头：' + String(first.content || '').slice(0, 200) }
     ]);
@@ -479,7 +469,7 @@ async function maybeRollup() {
   if ($('memoryModal') && $('memoryModal').classList.contains('open')) renderMemoryList();
 
   try {
-    const text = await fetchCompletion(plan.messages);
+    const text = await completeAuxiliary(plan.messages);
     if (applyRollup(memory, plan, text)) saveMemory();
   } catch (e) {
     console.warn('[WBE] 记忆整合失败，下回合重试:', e.message);
@@ -586,7 +576,7 @@ async function generateTemplateWithAI() {
       const keys = Array.isArray(e.key) ? e.key.join('、') : '';
       return '#' + e.uid + ' ' + (e.comment || '(无标题)') + (keys ? ' [' + keys + ']' : '') + '\n' + String(e.content || '').slice(0, 180);
     }).join('\n\n');
-    const text = await fetchCompletion(buildWritingTemplateGenerationMessages({ bookName: curBookName, samples }), { model, apiUrl, apiKey });
+    const text = await completeAuxiliary(buildWritingTemplateGenerationMessages({ bookName: curBookName, samples }), { model, apiUrl, apiKey });
     applyTemplateDraft(parseWritingTemplateDraft(text));
     import('./utils.js').then(m => m.showToast('已生成模板草稿，请检查后保存', 'success'));
   } catch (e) {
@@ -1598,7 +1588,7 @@ async function maybeCompleteSmartContent(draft, args) {
     (sections && covered < Math.min(3, sections.length));
   if (!incomplete) return draft;
   try {
-    const text = await fetchCompletion([
+    const text = await completeAuxiliary([
       { role: 'system', content: '你是世界书设定写手。世界书条目应当像设定集词条：结构完整、信息分层、可考据、中立客观。正文必须覆盖四要素：人（职业/岗位/关键人物）、地（至少 2 个具体地点）、数（价格/时间/数量/比例）、则（流程/规则/代价），缺少要素是缺陷必须补全。人物/职业相关条目必须写详细外观：上衣款式材质颜色、下装、鞋、外搭、配饰、体貌特征，全部是旁观者可见的细节，禁止“穿着得体”等空泛词。篇幅按设定复杂度弹性——小条目 80–300 字，大卡可 500–1500 字甚至更长。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节、可触发；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
       { role: 'user', content: '条目主题：' + (draft.title || '') +
         '\n段落模板：' + (sections ? sections.join('、') : '（按内容自然分段）') +
