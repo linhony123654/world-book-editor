@@ -17,9 +17,16 @@ function element(initial = {}) {
 
 function makeList() {
   const list = element();
+  let cachedHtml = null;
+  let cachedRows = [];
   list.querySelectorAll = selector => {
     if (selector !== '.undo-row') return [];
-    return [...list.innerHTML.matchAll(/data-idx="(\d+)"/g)].map(match => element({ dataset: { idx: match[1] } }));
+    if (list.innerHTML !== cachedHtml) {
+      cachedHtml = list.innerHTML;
+      cachedRows = [...list.innerHTML.matchAll(/data-idx="(\d+)"/g)]
+        .map(match => element({ dataset: { idx: match[1] } }));
+    }
+    return cachedRows;
   };
   return list;
 }
