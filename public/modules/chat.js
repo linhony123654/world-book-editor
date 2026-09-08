@@ -5,7 +5,7 @@ import { renderSidebar, selectEntry } from './sidebar.js';
 import { renderEditor, renderEditorEmpty } from './editor.js';
 import { scheduleSave, apiRequest, loadBookList, loadBook, createBook, renameBook, deleteBook } from './api.js';
 import { summarizeToolTraceForMemory } from './memory-summary.js';
-import { extractReasoningDelta, hasVisibleAssistantStream, reasoningDetailsShouldBeOpen, shouldCollapseReasoningAfterStream } from './reasoning.js';
+import { extractReasoningDelta, hasVisibleAssistantStream } from './reasoning.js';
 import { applyVisibleLimitToChildren, readChatVisibleLimit } from './chat-view.js';
 import { draftDisplayRows } from './smart-draft.js';
 import { clearActiveSmartDraft, createSmartDraftState, setActiveSmartDraft, takeActiveSmartDraft } from './smart-draft-state.js';
@@ -26,7 +26,7 @@ import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMem
 import { createAiDataRepository } from './ai/session/repository.js';
 import { createLegacyAiDataMigration } from './ai/session/migration.js';
 import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup, buildMemoryInjection as buildMemoryInjectionFromState, createTurnMemoryRecord, planRollup } from './ai/memory/policy.js';
-import { formatChatText } from './ai/ui/markdown.js';
+import { createAssistantStreamView } from './ai/ui/assistant-stream-view.js';
 import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
 
 // ===== 聊天状态 =====
@@ -829,6 +829,8 @@ function resendLast() {
 }
 
 // ===== 流式显示文本 =====
+const assistantStreamView = createAssistantStreamView();
+
 async function streamDisplay(response, msgEl) {
   return consumeAssistantStream(streamSSE(response), {
     extractReasoning: extractReasoningDelta,
@@ -845,53 +847,11 @@ async function streamDisplay(response, msgEl) {
 }
 
 function collapseReasoningAfterStream(msgEl, reasoning) {
-  if (!shouldCollapseReasoningAfterStream(reasoning)) return;
-  const box = msgEl.querySelector('.reasoning-box');
-  if (box) box.open = false;
+  assistantStreamView.collapse(msgEl, reasoning);
 }
 
-// 流式渲染：requestAnimationFrame 节流（同一帧最多渲染一次），
-// 结构稳定后只增量更新正文/思考内容，避免每个 delta 全量重写 + 全量 markdown 解析。
-// 非流式（reasoningOpen=false，如流结束冲刷、最终回复）同步渲染，
-// 保证后续 append 的子元素（如「重新生成」按钮）不会被延迟的 rAF 整帧重建抹掉。
-let streamRenderRaf = null;
 function renderAssistantStream(msgEl, content, reasoning, reasoningOpen = false) {
-  const doRender = () => {
-    const textEl = msgEl.querySelector('.stream-content');
-    const rb = msgEl.querySelector('.reasoning-box');
-    // 结构缺失（首帧 / 思考块新出现）才整体重建，否则增量更新
-    const needRebuild = !textEl || (reasoning && !rb);
-    if (needRebuild) {
-      const parts = [];
-      if (reasoning) {
-        parts.push('<details class="reasoning-box"' + (reasoningDetailsShouldBeOpen(reasoning, reasoningOpen) ? ' open' : '') + '>' +
-          '<summary>思考</summary>' +
-          '<div class="reasoning-text">' + formatChatText(reasoning) + '</div>' +
-          '</details>');
-      }
-      if (content) parts.push('<div class="stream-content">' + formatChatText(content) + '</div>');
-      else if (!reasoning) parts.push('<span class="typing-cursor">◊</span>');
-      msgEl.innerHTML = parts.join('');
-    } else {
-      if (content) textEl.innerHTML = formatChatText(content);
-      else if (!reasoning) textEl.innerHTML = '<span class="typing-cursor">◊</span>';
-      if (rb && reasoning) {
-        const rt = rb.querySelector('.reasoning-text');
-        if (rt) rt.innerHTML = formatChatText(reasoning);
-      }
-    }
-  };
-  if (reasoningOpen) {
-    // 流式高频调用：同一帧只渲染最后一次
-    if (streamRenderRaf) cancelAnimationFrame(streamRenderRaf);
-    streamRenderRaf = requestAnimationFrame(() => {
-      streamRenderRaf = null;
-      doRender();
-    });
-  } else {
-    if (streamRenderRaf) { cancelAnimationFrame(streamRenderRaf); streamRenderRaf = null; }
-    doRender();
-  }
+  assistantStreamView.render(msgEl, content, reasoning, reasoningOpen);
 }
 
 // ===== 聊天滚动 =====
