@@ -19,6 +19,7 @@ import { getTools } from './ai/tools/definitions.js';
 import { countMessagesTokens, trimToBudget } from './ai/conversation/budget.js';
 import { runConversationTurn } from './ai/conversation/engine.js';
 import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMemoryLimits, normalizeMemory, normalizeSessionList, pruneSessions, recentMemoryTurns, selectActiveSession, titleFromMessages, updateSessionFromChat, visibleMessagesFromSession } from './ai/session/model.js';
+import { createAiDataRepository } from './ai/session/repository.js';
 import { formatChatText } from './ai/ui/markdown.js';
 import { applyEntryFilter as filterEntries, searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers, bookInfo as buildBookInfo } from './ai/tools/worldbook-read.js';
 
@@ -54,28 +55,22 @@ const ROLLUP_EVERY = 10;  // 每满 N 条小总结整合一次
 function memKey(bookId) { return 'wbe-memory:' + (bookId || 'unsaved'); }
 
 // ===== 会话/记忆持久化：后端 SQLite（容量不受 localStorage 限制），localStorage 仅作一次性迁移源 =====
-// 写操作串行入队，避免并发 PUT 互相覆盖；失败只告警不阻断（下次保存会重写全量）
-let persistQueue = Promise.resolve();
+// 网络、鉴权与串行 PUT 由 repository 层负责；chat.js 只保留兼容调用名。
+const aiDataRepository = createAiDataRepository({
+  fetchImpl: (...args) => fetch(...args),
+  getAuthHeaders: async () => {
+    const { authHeaders } = await import('./auth.js');
+    return authHeaders();
+  },
+  onWriteError: (error, bookId) => {
+    console.warn('[WBE] 持久化失败（book ' + bookId + '）:', error.message);
+  }
+});
 function persistPut(bookId, payload) {
-  persistQueue = persistQueue.then(async () => {
-    try {
-      const { authHeaders } = await import('./auth.js');
-      await fetch('/api/ai-data/' + bookId, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify(payload)
-      });
-    } catch (e) {
-      console.warn('[WBE] 持久化失败（book ' + bookId + '）:', e.message);
-    }
-  });
-  return persistQueue;
+  return aiDataRepository.write(bookId, payload);
 }
-async function persistFetch(bookId) {
-  const { authHeaders } = await import('./auth.js');
-  const r = await fetch('/api/ai-data/' + bookId, { headers: authHeaders() });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  return r.json();
+function persistFetch(bookId) {
+  return aiDataRepository.read(bookId);
 }
 
 // 把损坏的本地数据备份到 wbe-corrupt-backup，避免坏数据被静默重置丢失
