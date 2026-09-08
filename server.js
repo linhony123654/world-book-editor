@@ -10,6 +10,8 @@ const { registerAiDataRoutes } = require('./server/ai-data-routes');
 const { createCloudTransports } = require('./server/cloud-transports');
 const { createCloudService } = require('./server/cloud-service');
 const { registerCloudRoutes } = require('./server/cloud-routes');
+const { createSearchService } = require('./server/search-service');
+const { registerSearchRoutes } = require('./server/search-routes');
 
 const app = express();
 const PORT = process.env.PORT || 8084;
@@ -64,77 +66,9 @@ registerAuthRoutes(app, { db, authService, loginRateLimit });
 const booksService = createBooksService({ db, rootDir: __dirname });
 registerVersionRoutes(app, { authRequired, booksService });
 
-// ===== 网络搜索代理：Bing 主源 + DuckDuckGo 备源（免费无 key） =====
-const SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
-
-function decodeBingUrl(href) {
-  try {
-    const u = String(href).match(/[?&]u=([^&]+)/);
-    if (u) {
-      const b64 = decodeURIComponent(u[1]).replace(/^a1/, '');
-      const pad = b64 + '='.repeat((4 - b64.length % 4) % 4);
-      const url = Buffer.from(pad, 'base64').toString('utf8');
-      if (url.startsWith('http')) return url;
-    }
-  } catch {}
-  return href;
-}
-
-async function searchBing(q) {
-  const r = await fetch('https://www.bing.com/search?q=' + encodeURIComponent(q) + '&setlang=zh-hans', {
-    headers: { 'User-Agent': SEARCH_UA }
-  });
-  const html = await r.text();
-  const results = [];
-  const re = /<li class="b_algo"[\s\S]*?<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>[\s\S]*?(?:<p[^>]*>([\s\S]*?)<\/p>)?/g;
-  let m;
-  while ((m = re.exec(html)) !== null && results.length < 8) {
-    const title = String(m[2] || '').replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, ' ').trim();
-    const snippet = String(m[3] || '').replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, ' ').trim();
-    if (title) results.push({ title, url: decodeBingUrl(m[1]), snippet });
-  }
-  return { results, limited: r.status === 429 || results.length === 0 && html.length < 30000 };
-}
-
-function decodeDdgUrl(href) {
-  try {
-    const m = String(href).match(/uddg=([^&]+)/);
-    return m ? decodeURIComponent(m[1]) : href;
-  } catch { return href; }
-}
-
-async function searchDdg(q) {
-  const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q), {
-    headers: { 'User-Agent': SEARCH_UA }
-  });
-  const html = await r.text();
-  const limited = r.status >= 400 || html.includes('anomaly') || html.includes('unusual traffic');
-  const results = [];
-  if (!limited) {
-    const re = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-    let m;
-    while ((m = re.exec(html)) !== null && results.length < 8) {
-      const title = String(m[2] || '').replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ').trim();
-      if (title) results.push({ title, url: decodeDdgUrl(m[1]), snippet: '' });
-    }
-  }
-  return { results, limited };
-}
-
-app.post('/api/proxy/search', authRequired, async (req, res) => {
-  const q = String((req.body || {}).q || '').trim();
-  if (!q || q.length > 200) return res.status(400).json({ error: '缺少搜索词' });
-  try {
-    const bing = await searchBing(q);
-    if (bing.results.length) return res.json({ query: q, results: bing.results, source: 'bing' });
-    const ddg = await searchDdg(q);
-    if (ddg.results.length) return res.json({ query: q, results: ddg.results, source: 'duckduckgo' });
-    if (bing.limited || ddg.limited) return res.status(503).json({ error: '搜索服务暂时被限流，请稍后再试' });
-    res.json({ query: q, results: [], source: 'none' });
-  } catch (e) {
-    res.status(502).json({ error: '搜索失败: ' + e.message });
-  }
-});
+// ===== Search Proxy =====
+const searchService = createSearchService();
+registerSearchRoutes(app, { authRequired, searchService });
 
 // 数据 API 全部需要登录
 app.use(['/api/books', '/api/proxy', '/api/test-tool', '/api/ai-data', '/api/cloud'], authRequired);
