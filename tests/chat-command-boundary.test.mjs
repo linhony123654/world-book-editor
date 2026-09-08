@@ -11,11 +11,18 @@ test('chat delegates streaming transport instead of implementing the wire protoc
   assert.doesNotMatch(chat, /async function streamFetch\s*\(/);
 });
 
-test('chat mutating tools use the command boundary', () => {
-  assert.match(chat, /from '\.\/domain\/command-runtime\.js'/);
-  assert.match(chat, /CommandType\.PATCH_ENTRIES/);
-  assert.match(chat, /CommandType\.MERGE_EXISTING_ENTRIES/);
-  assert.match(chat, /CommandType\.SPLIT_ENTRY/);
+test('chat delegates mutating entry tools to the world-book mutation adapter', () => {
+  const mutationPath = new URL('../public/modules/ai/tools/worldbook-mutation.js', import.meta.url);
+  const mutation = fs.readFileSync(mutationPath, 'utf8');
+  assert.match(chat, /from '\.\/ai\/tools\/worldbook-mutation\.js'/);
+  assert.match(chat, /createWorldBookMutationHandlers\s*\(/);
+  assert.match(chat, /\.\.\.mutationToolHandlers/);
+  assert.doesNotMatch(chat, /function toolEdit\s*\(/);
+  assert.doesNotMatch(chat, /function toolDeleteMany\s*\(/);
+  assert.doesNotMatch(chat, /function toolMergeEntries\s*\(/);
+  assert.match(mutation, /CommandType\.PATCH_ENTRIES/);
+  assert.match(mutation, /CommandType\.MERGE_EXISTING_ENTRIES/);
+  assert.match(mutation, /CommandType\.SPLIT_ENTRY/);
   assert.doesNotMatch(chat, /worldBook\.entries\s*\[/);
   assert.doesNotMatch(chat, /\buidKey\s*\(/);
 });
