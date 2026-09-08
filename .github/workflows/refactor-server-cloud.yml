@@ -6,6 +6,7 @@ on:
       - refactor/lore-atlas-v2
     paths:
       - scripts/migrate-server-cloud.mjs
+      - tests/sigv4.test.mjs
       - .github/workflows/refactor-server-cloud.yml
 
 permissions:
@@ -32,7 +33,7 @@ jobs:
           node --check server/cloud-transports.js
           node --check server/cloud-service.js
           node --check server/cloud-routes.js
-          node --test tests/server-cloud-transports.test.mjs tests/server-cloud-service.test.mjs tests/server-cloud-routes.test.mjs tests/server-cloud-boundary.test.mjs
+          node --test tests/server-cloud-transports.test.mjs tests/server-cloud-service.test.mjs tests/server-cloud-routes.test.mjs tests/server-cloud-boundary.test.mjs tests/sigv4.test.mjs
       - name: Full test suite
         run: npm test
       - name: Commit migration and remove one-shot scaffolding
