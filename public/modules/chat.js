@@ -21,6 +21,7 @@ import { runWorldBookCommand } from './domain/command-runtime.js';
 import { getTools } from './ai/tools/definitions.js';
 import { countMessagesTokens, trimToBudget } from './ai/conversation/budget.js';
 import { runConversationTurn } from './ai/conversation/engine.js';
+import { consumeAssistantStream } from './ai/conversation/stream-adapter.js';
 import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMemoryLimits, normalizeMemory, normalizeSessionList, pruneSessions, recentMemoryTurns, selectActiveSession, titleFromMessages, updateSessionFromChat, visibleMessagesFromSession } from './ai/session/model.js';
 import { createAiDataRepository } from './ai/session/repository.js';
 import { createLegacyAiDataMigration } from './ai/session/migration.js';
@@ -829,40 +830,18 @@ function resendLast() {
 
 // ===== 流式显示文本 =====
 async function streamDisplay(response, msgEl) {
-  let content = '';
-  let reasoning = '';
-  let toolCalls = [];
-  for await (const chunk of streamSSE(response)) {
-    const delta = chunk.choices?.[0]?.delta;
-    if (!delta) continue;
-    const reasoningDelta = extractReasoningDelta(delta);
-    if (reasoningDelta) {
-      reasoning += reasoningDelta;
+  return consumeAssistantStream(streamSSE(response), {
+    extractReasoning: extractReasoningDelta,
+    onUpdate: ({ content, reasoning }) => {
       renderAssistantStream(msgEl, content, reasoning, true);
       if (isChatNearBottom()) scrollChatToBottom();
+    },
+    onComplete: ({ content, reasoning }) => {
+      collapseReasoningAfterStream(msgEl, reasoning);
+      // 冲刷最后一帧：rAF 节流下最后一帧可能仍在排队，这里同步补一帧收尾。
+      renderAssistantStream(msgEl, content, reasoning, false);
     }
-    if (delta.content) {
-      content += delta.content;
-      renderAssistantStream(msgEl, content, reasoning, true);
-      if (isChatNearBottom()) scrollChatToBottom(); // 贴底才跟随；用户上翻则不打扰
-    }
-    if (delta.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        const idx = tc.index ?? 0;
-        if (!toolCalls[idx]) toolCalls[idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
-        if (tc.id) toolCalls[idx].id = tc.id;
-        if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
-        if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
-      }
-    }
-  }
-  collapseReasoningAfterStream(msgEl, reasoning);
-  // 冲刷最后一帧：rAF 节流下最后一帧可能仍在排队，这里以「非流式」姿态补一帧收尾
-  renderAssistantStream(msgEl, content, reasoning, false);
-  // 压实：某些代理(Anthropic→OpenAI)用 content block index 当 tool_calls index，
-  // 文本块占 0 导致数组出现空洞，filter 去掉空洞并丢弃没拿到函数名的残块
-  const compact = toolCalls.filter(tc => tc && tc.function && tc.function.name);
-  return { content, reasoning, tool_calls: compact.length > 0 ? compact : null };
+  });
 }
 
 function collapseReasoningAfterStream(msgEl, reasoning) {
