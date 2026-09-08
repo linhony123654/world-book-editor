@@ -3,7 +3,7 @@ import { $, escHtml, escAttr, showToast, showConfirm, openModal, closeModal } fr
 import { loadBookList, loadBook, importFile, exportFile, exportMarkdown, autoSave, scheduleSave, setWbeDeps, apiRequest } from './modules/api.js';
 import { renderSidebar, initSidebar } from './modules/sidebar.js';
 import { renderEditor, renderEditorEmpty, newEntry, deleteEntry, duplicateEntry, autoSizeTitle } from './modules/editor.js';
-import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit } from './modules/chat.js';
+import { initChat, ensureMemoryLoaded, DEFAULT_SYSTEM_PROMPT, applyChatVisibleLimit, getChatUsage } from './modules/chat.js';
 import { initBooks, renderArchives } from './modules/books.js';
 import { entries, currentUid, restoreUndo, undoStack, restoreUndoTo, currentBookId, worldBook } from './modules/state.js';
 import { chooseInitialBookId } from './modules/book-session.js';
@@ -14,13 +14,30 @@ import { createAccountCloudController } from './modules/app/account-cloud.js';
 import { createApiProfileRepository } from './modules/app/api-profiles.js';
 import { decodeLegacyConfigKey, decryptConfigKey, encryptConfigKey, isEncryptedConfigKey } from './modules/app/config-key-crypto.js';
 import { apiStatusText, createApiSettingsController } from './modules/app/api-settings.js';
+import { createPreferencesController } from './modules/app/preferences.js';
 
 const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings', 'me'];
 
 // ===== 多 API 配置档案 =====
+let preferences = null;
 const profileRepo = createApiProfileRepository({
   storage: localStorage,
-  onActiveChanged: () => refreshSettings()
+  onActiveChanged: () => preferences?.refreshSettings()
+});
+
+preferences = createPreferencesController({
+  $,
+  documentRef: document,
+  storage: localStorage,
+  profileRepo,
+  escHtml,
+  escAttr,
+  apiStatusText,
+  readChatVisibleLimit,
+  saveChatVisibleLimit,
+  applyChatVisibleLimit,
+  getChatUsage: async () => getChatUsage(),
+  showToast
 });
 
 // ===== 屏幕切换 =====
@@ -38,7 +55,7 @@ function setScreen(name) {
   if (app) app.scrollTop = name === 'chat' ? app.scrollHeight : 0;
   else window.scrollTo(0, 0);
   if (name === 'archives') renderArchives();
-  if (name === 'settings') { refreshSettings(); setSettab('pref'); }
+  if (name === 'settings') { preferences.refreshSettings(); preferences.setSettingsTab('pref'); }
   if (name === 'me') accountCloud.fillProfile();
   if (name === 'editor') autoSizeTitle(); // 隐藏时渲染过标题，切回来重算高度
 }
@@ -95,7 +112,7 @@ const apiSettings = createApiSettingsController({
   fetchImpl: (...args) => fetch(...args),
   profileRepo,
   defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
-  refreshSettings
+  refreshSettings: () => preferences.refreshSettings()
 });
 
 // ===== 初始化 =====
@@ -115,7 +132,7 @@ async function bootApp() {
   bindNav();
   bindEntryActions();
   bindSettings();
-  bindSettabs();
+  preferences.bind();
   apiSettings.bind();
   versionHistory.bind();
   bindModalClose();
@@ -127,8 +144,7 @@ async function bootApp() {
   initChat();
   initBooks({ renderSidebar, selectEntry: onSelectEntry, renderEditorEmpty }, setScreen);
   setWbeDeps({ renderSidebar, selectEntry: onSelectEntry, renderEditorEmpty });
-  initTheme();
-  initAutoSaveSwitch();
+
   // AI 改动卡片点击条目 → 跳编辑器
   document.addEventListener('wbe:goto-editor', () => setScreen('editor'));
 
@@ -139,7 +155,7 @@ async function bootApp() {
   } else {
     renderEditorEmpty();
   }
-  refreshSettings();
+  preferences.refreshSettings();
 }
 
 // ===== 导航绑定 =====
@@ -268,17 +284,6 @@ function onCreateEntry() {
   setScreen('editor');
 }
 
-// ===== 设置页顶部标签（偏好 / AI 助手 / 数据与同步） =====
-function setSettab(tab) {
-  document.querySelectorAll('.settings-tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.settab === tab));
-  document.querySelectorAll('.settings-pane').forEach(p => { p.hidden = p.dataset.pane !== tab; });
-}
-function bindSettabs() {
-  document.querySelectorAll('.settings-tabs .tab').forEach(btn => {
-    btn.addEventListener('click', () => setSettab(btn.dataset.settab));
-  });
-}
-
 // ===== 设置项绑定 =====
 function bindSettings() {
   $('importBtn') && $('importBtn').addEventListener('click', () => $('file-input').click());
@@ -329,7 +334,7 @@ function bindSettings() {
       if (!payload || !Array.isArray(payload.p)) throw new Error('bad key');
       const imported = profileRepo.replaceImported(payload.p, payload.a);
       if (!imported.profiles.length) throw new Error('no profiles');
-      refreshSettings();
+      preferences.refreshSettings();
       showToast('已导入 ' + imported.profiles.length + ' 个接口配置', 'success');
     } catch (e) {
       showToast('秘钥无效或密码错误', 'error');
@@ -343,104 +348,7 @@ function bindSettings() {
     if (target) { await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty); await ensureMemoryLoaded(); }
     else showToast('没有可加载的世界书', 'error');
   });
-  const chatLimit = $('chatVisibleLimitInput');
-  if (chatLimit) chatLimit.addEventListener('change', () => {
-    const limit = saveChatVisibleLimit(chatLimit.value);
-    chatLimit.value = String(limit);
-    applyChatVisibleLimit();
-    showToast(limit === 0 ? '会话已设为显示全部' : '会话显示最近 ' + limit + ' 条', 'success');
-  });
-}
 
-async function refreshSettings() {
-  const profiles = profileRepo.load();
-  const active = profileRepo.get(profileRepo.activeId()) || profiles[0] || null;
-
-  // API 状态
-  const label = $('apiStatusLabel');
-  if (label) label.textContent = apiStatusText(active);
-  // 快速切换下拉
-  const quick = $('apiProfileSelect');
-  if (quick) {
-    if (profiles.length === 0) {
-      quick.style.display = 'none';
-    } else {
-      quick.style.display = '';
-      quick.innerHTML = profiles.map(p =>
-        '<option value="' + escAttr(p.id) + '">' + escHtml(p.name || '未命名') + '</option>'
-      ).join('');
-      quick.value = (active && active.id) || profiles[0].id;
-    }
-  }
-  // 自动保存开关状态
-  const sw = $('autoSaveSwitch');
-  if (sw) {
-    sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
-    syncSwitch(sw);
-  }
-  // AI 用量统计（当前世界书全部会话）
-  const usageRow = $('usageStatsRow');
-  const usageLabel = $('usageStatsLabel');
-  if (usageRow && usageLabel) {
-    try {
-      const { getChatUsage } = await import('./modules/chat.js');
-      const usage = getChatUsage();
-      if (usage.sessions > 0) {
-        usageRow.style.display = '';
-        usageLabel.textContent = usage.sessions + ' 个会话 · 累计发送 ≈ ' + usage.tokens.toLocaleString() + ' tok' +
-          (usage.withStats < usage.sessions ? '（旧会话未计入）' : '');
-      } else {
-        usageRow.style.display = 'none';
-      }
-    } catch (e) {
-      usageRow.style.display = 'none';
-    }
-  }
-  const chatLimit = $('chatVisibleLimitInput');
-  if (chatLimit) chatLimit.value = String(readChatVisibleLimit());
-}
-
-// 开关的 .off 与 aria-checked 保持一致
-function syncSwitch(sw) {
-  if (sw) sw.setAttribute('aria-checked', sw.classList.contains('off') ? 'false' : 'true');
-}
-
-// ===== 主题 =====
-function initTheme() {
-  const saved = localStorage.getItem('wbe-theme') || 'light';
-  applyTheme(saved);
-  const sw = $('themeSwitch');
-  if (sw) sw.addEventListener('click', () => {
-    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
-    localStorage.setItem('wbe-theme', next);
-  });
-}
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  const sw = $('themeSwitch');
-  if (sw) {
-    sw.classList.toggle('off', theme === 'dark');
-    syncSwitch(sw);
-  }
-  const label = $('themeLabel');
-  if (label) label.textContent = theme === 'dark' ? '夜墨模式 · 深色背景' : '暖纸张、墨色正文与酒红强调';
-  const mc = document.querySelector('meta[name="theme-color"]');
-  if (mc) mc.setAttribute('content', theme === 'dark' ? '#11110f' : '#f3efe7');
-}
-
-// ===== 自动保存开关 =====
-function initAutoSaveSwitch() {
-  const sw = $('autoSaveSwitch');
-  if (!sw) return;
-  sw.classList.toggle('off', localStorage.getItem('wbe-autosave') === 'off');
-  syncSwitch(sw);
-  sw.addEventListener('click', () => {
-    const off = sw.classList.toggle('off');
-    syncSwitch(sw);
-    localStorage.setItem('wbe-autosave', off ? 'off' : 'on');
-    showToast(off ? '已关闭自动保存' : '已开启自动保存', 'success');
-  });
 }
 
 // ===== 通用弹窗关闭（焦点管理见 utils.js 的 Modal 工具） =====
