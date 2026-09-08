@@ -20,6 +20,8 @@ import { copyText } from './modules/ai/ui/clipboard.js';
 import { createUndoHistoryController } from './modules/app/undo-history.js';
 import { createEntryActionsController } from './modules/app/entry-actions.js';
 import { createNavigationController } from './modules/app/navigation.js';
+import { createModalLifecycleController } from './modules/app/modal-lifecycle.js';
+import { createAppBootstrapController } from './modules/app/bootstrap.js';
 
 
 // ===== 多 API 配置档案 =====
@@ -168,62 +170,44 @@ const undoHistory = createUndoHistoryController({
   showToast
 });
 
-// ===== 初始化 =====
-async function init() {
-  bindAuth();
-  const authed = await checkAuth();
-  if (!authed) {
-    // 未登录/首次设置：等认证完成后启动主界面
-    window.addEventListener('wbe:authenticated', () => bootApp(), { once: true });
-    window.addEventListener('wbe:unauthorized', () => { showLoginScreen('login'); });
-    return;
-  }
-  bootApp();
-}
+const modalLifecycle = createModalLifecycleController({
+  $,
+  documentRef: document,
+  closeModal
+});
 
-async function bootApp() {
-  navigation.bind();
-  entryActions.bind();
-  dataTools.bind();
-  preferences.bind();
-  apiSettings.bind();
-  versionHistory.bind();
-  bindModalClose();
-  undoHistory.bind();
-  accountCloud.bindCloud();
-  accountCloud.bindMe();
-
-  initSidebar(onSelectEntry, setScreen);
-  initChat();
-  initBooks({ renderSidebar, selectEntry: onSelectEntry, renderEditorEmpty }, setScreen);
-  setWbeDeps({ renderSidebar, selectEntry: onSelectEntry, renderEditorEmpty });
-
-  // AI 改动卡片点击条目 → 跳编辑器
-  document.addEventListener('wbe:goto-editor', () => setScreen('editor'));
-
-  const books = await loadBookList();
-  if (books.length > 0) {
-    await loadBook(chooseInitialBookId(books), renderSidebar, onSelectEntry, renderEditorEmpty);
-    await ensureMemoryLoaded(); // 书加载后同步本书记忆（角标/注入/清空都对得上）
-  } else {
-    renderEditorEmpty();
-  }
-  preferences.refreshSettings();
-}
-
-// ===== 通用弹窗关闭（焦点管理见 utils.js 的 Modal 工具） =====
-function bindModalClose() {
-  document.querySelectorAll('[data-close-modal]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const m = $(btn.dataset.closeModal);
-      closeModal(m);
-    });
-  });
-  ['entryModal', 'bookModal', 'apiModal', 'memoryModal', 'templateModal', 'smartDraftModal', 'versionsModal', 'diffModal'].forEach(id => {
-    const m = $(id);
-    if (m) m.addEventListener('click', e => { if (e.target === m) closeModal(m); });
-  });
-}
+const bootstrap = createAppBootstrapController({
+  windowRef: window,
+  documentRef: document,
+  bindAuth,
+  checkAuth,
+  showLoginScreen,
+  binders: [
+    () => navigation.bind(),
+    () => entryActions.bind(),
+    () => dataTools.bind(),
+    () => preferences.bind(),
+    () => apiSettings.bind(),
+    () => versionHistory.bind(),
+    () => modalLifecycle.bind(),
+    () => undoHistory.bind(),
+    () => accountCloud.bindCloud(),
+    () => accountCloud.bindMe()
+  ],
+  initSidebar,
+  initChat,
+  initBooks,
+  setWbeDeps,
+  renderSidebar,
+  selectEntry: onSelectEntry,
+  renderEditorEmpty,
+  setScreen,
+  loadBookList,
+  chooseInitialBookId,
+  loadBook,
+  ensureMemoryLoaded,
+  refreshSettings: () => preferences.refreshSettings()
+});
 
 // ===== 启动 =====
-init();
+bootstrap.init();
