@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { CommandType } from '../public/modules/domain/worldbook-commands.js';
 import {
   WORLD_BOOK_MUTATION_TOOL_NAMES,
   createWorldBookMutationHandlers,
@@ -31,24 +32,24 @@ function makeHarness(initial = []) {
   const runCommand = (command, options) => {
     calls.push({ command, options });
     switch (command.type) {
-      case 'patch_entry': {
+      case CommandType.PATCH_ENTRY: {
         const entry = entries.find(item => item.uid === command.uid);
         if (!entry) return { changed: false };
         Object.assign(entry, command.patch);
         return { changed: true, affectedUids: [command.uid] };
       }
-      case 'set_entry_field': {
+      case CommandType.SET_ENTRY_FIELD: {
         for (const uid of command.uids) {
           const entry = entries.find(item => item.uid === uid);
           if (entry) entry[command.field] = command.value;
         }
         return { changed: true, affectedUids: command.uids };
       }
-      case 'create_entry': {
+      case CommandType.CREATE_ENTRY: {
         entries.push(command.entry);
         return { changed: true, createdUids: [command.entry.uid] };
       }
-      case 'merge_entries': {
+      case CommandType.MERGE_ENTRIES: {
         const createdUids = [];
         for (const source of command.entries) {
           const uid = next++;
@@ -57,7 +58,7 @@ function makeHarness(initial = []) {
         }
         return { changed: true, createdUids };
       }
-      case 'delete_entries': {
+      case CommandType.DELETE_ENTRIES: {
         const deletedUids = command.uids.filter(uid => entries.some(entry => entry.uid === uid));
         for (const uid of deletedUids) {
           const index = entries.findIndex(entry => entry.uid === uid);
@@ -65,7 +66,7 @@ function makeHarness(initial = []) {
         }
         return { changed: deletedUids.length > 0, deletedUids };
       }
-      case 'patch_entries': {
+      case CommandType.PATCH_ENTRIES: {
         const affectedUids = [];
         for (const item of command.patches) {
           const entry = entries.find(entry => entry.uid === item.uid);
@@ -73,14 +74,14 @@ function makeHarness(initial = []) {
         }
         return { changed: affectedUids.length > 0, affectedUids };
       }
-      case 'duplicate_entry': {
+      case CommandType.DUPLICATE_ENTRY: {
         const source = entries.find(entry => entry.uid === command.sourceUid);
         if (!source) return { changed: false, createdUids: [] };
         const uid = next++;
         entries.push({ ...source, uid });
         return { changed: true, createdUids: [uid] };
       }
-      case 'merge_existing_entries': {
+      case CommandType.MERGE_EXISTING_ENTRIES: {
         const keep = entries.find(entry => entry.uid === command.keep);
         const deletedUids = command.uids.filter(uid => uid !== command.keep);
         for (const uid of deletedUids) {
@@ -89,7 +90,7 @@ function makeHarness(initial = []) {
         }
         return { changed: !!keep, keptUid: command.keep, deletedUids };
       }
-      case 'split_entry': {
+      case CommandType.SPLIT_ENTRY: {
         const index = entries.findIndex(entry => entry.uid === command.sourceUid);
         if (index < 0) return { changed: false, createdUids: [] };
         entries.splice(index, 1);
@@ -146,7 +147,7 @@ test('edit_entry ignores unknown fields and emits one PATCH_ENTRY command', () =
   assert.equal(result.summary, '已修改 #1 的 comment');
   assert.equal(h.entries[0].comment, 'new');
   assert.equal(h.calls.length, 1);
-  assert.equal(h.calls[0].command.type, 'patch_entry');
+  assert.equal(h.calls[0].command.type, CommandType.PATCH_ENTRY);
   assert.deepEqual(h.calls[0].command.patch, { comment: 'new' });
 });
 
