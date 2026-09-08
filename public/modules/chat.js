@@ -1,18 +1,38 @@
 // ===== AI 聊天 =====
-import { escHtml, escAttr, escUrl, $, estimateTokens } from './utils.js';
-import { TOOL_NAMES, TOOL_NAME_PATTERN } from './tool-names.js';
-import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, uidKey, setEntries, snapshotForUndo, restoreUndo, undoStackLength, restoreUndoTo } from './state.js';
+import { escHtml, escAttr, $ } from './utils.js';
+import { worldBook, entries, currentUid, currentBookId, nextUid, createEntry, setEntries, snapshotForUndo, restoreUndo, undoStackLength, restoreUndoTo } from './state.js';
 import { renderSidebar, selectEntry } from './sidebar.js';
 import { renderEditor, renderEditorEmpty } from './editor.js';
 import { scheduleSave, apiRequest, loadBookList, loadBook, createBook, renameBook, deleteBook } from './api.js';
 import { summarizeToolTraceForMemory } from './memory-summary.js';
-import { planWorldbookEntry } from './worldbook-intelligence/index.js';
-import { TEMPLATES } from './worldbook-intelligence/templates.js';
-import { extractReasoningDelta, hasVisibleAssistantStream, reasoningDetailsShouldBeOpen, shouldCollapseReasoningAfterStream } from './reasoning.js';
+import { extractReasoningDelta, hasVisibleAssistantStream } from './reasoning.js';
 import { applyVisibleLimitToChildren, readChatVisibleLimit } from './chat-view.js';
-import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows, formatDecision } from './smart-draft.js';
+import { draftDisplayRows } from './smart-draft.js';
 import { clearActiveSmartDraft, createSmartDraftState, setActiveSmartDraft, takeActiveSmartDraft } from './smart-draft-state.js';
-import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, selectWritingTemplate, writingTemplateKey } from './writing-template.js';
+import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, writingTemplateKey } from './writing-template.js';
+import { streamFetch, streamSSE } from './ai/transport.js';
+import { createSafeToolExecutor, createToolExecutor } from './ai/tools/executor.js';
+import { WORLD_BOOK_MUTATION_TOOL_NAMES, createWorldBookMutationHandlers } from './ai/tools/worldbook-mutation.js';
+import { createSmartDraftOrchestrator } from './ai/tools/smart-draft.js';
+import { createWebSearchTool } from './ai/tools/web-search.js';
+import { createBookToolHandlers } from './ai/tools/book-tools.js';
+import { createAuxiliaryCompletionClient } from './ai/auxiliary-client.js';
+import { runWorldBookCommand } from './domain/command-runtime.js';
+import { getTools } from './ai/tools/definitions.js';
+import { countMessagesTokens, trimToBudget } from './ai/conversation/budget.js';
+import { runConversationTurn } from './ai/conversation/engine.js';
+import { consumeAssistantStream } from './ai/conversation/stream-adapter.js';
+import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMemoryLimits, normalizeMemory, normalizeSessionList, pruneSessions, recentMemoryTurns, selectActiveSession, titleFromMessages, updateSessionFromChat, visibleMessagesFromSession } from './ai/session/model.js';
+import { createAiDataRepository } from './ai/session/repository.js';
+import { createLegacyAiDataMigration } from './ai/session/migration.js';
+import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup, buildMemoryInjection as buildMemoryInjectionFromState, createTurnMemoryRecord, planRollup } from './ai/memory/policy.js';
+import { createAssistantStreamView } from './ai/ui/assistant-stream-view.js';
+import { createChatRenderer } from './ai/ui/chat-renderer.js';
+import { createChatComposer } from './ai/ui/chat-composer.js';
+import { createMessageActionsView } from './ai/ui/message-actions-view.js';
+import { createMessageEditView } from './ai/ui/message-edit-view.js';
+import { copyText } from './ai/ui/clipboard.js';
+import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
 
 // ===== 聊天状态 =====
 const chatMessages = [];
@@ -32,83 +52,65 @@ export const DEFAULT_SYSTEM_PROMPT = '你是一个世界书编辑助手。根据
   'web_search 使用规则——仅在需要现实世界资料时调用（用户要求查证历史/地理/文化/法律/科技等真实知识，或写作需要现实依据时）；世界书内部内容一律用 search_entries 查，不要联网；纯虚构创作且用户未要求查证时不要调用；单回合最多调用 5 次；结果需甄别，提炼可用信息融入设定，不要照抄原文。' +
   '需要一次写入或删除多条时优先用批量工具；改长正文的局部内容时优先 replace_text 而非 edit_entry 整段重写。回复简洁。' +
   '关键词冲突处理规则——check_entries 报告里的“[关键词共享]”不是错误：两条目共用关键词但内容不重叠时（如人物与其装备共享人名），是有意的互补设计，必须保留，不要改动。只有“[关键词冲突]”（内容高度相似）才需要处理。处理方式优先合并或调整新增的条目，禁止擅自删除/修改已有条目的关键词——那会让该条目失去触发；确需修改时先向用户说明影响并得到确认。';
-// 工具调用文本格式的正则都从 TOOL_NAME_PATTERN 派生，名单单一来源，避免多处重复漂移
-const TOOL_CALL_JSON_RE = new RegExp('\\{\\s*"name"\\s*:\\s*"(' + TOOL_NAME_PATTERN + ')"\\s*,\\s*"arguments"\\s*:\\s*(\\{[\\s\\S]*?\\})\\s*\\}', 'g');
-const TOOL_FN_RE = new RegExp('\\b(' + TOOL_NAME_PATTERN + ')\\s*\\(([^)]*)\\)', 'g');
-const TOOL_CALL_JSON_STRIP_RE = new RegExp('\\{\\s*"name"\\s*:\\s*"(' + TOOL_NAME_PATTERN + ')"\\s*,\\s*"arguments"\\s*:\\s*\\{[\\s\\S]*?\\}\\s*\\}', 'g');
 const smartDraftState = createSmartDraftState();
 
 // ===== 分层记忆：回合小总结 + AI 大总结，按世界书持久化 =====
 // turns: 每回合一条小总结 {user, actionSummary, toolSummary, toolDetail[], reply, ts}
 // rollups: 每满 ROLLUP_EVERY 条小总结，AI 浓缩成一段阶段总结 {from, to, text}
 // rolledUpCount: 已被大总结覆盖的 turns 前缀数量
-const MAX_MEMORY_TURNS = 100;   // 记忆小总结保留上限（超出丢弃最旧的）
-const MAX_MEMORY_ROLLUPS = 10;  // 阶段总结保留上限
-let memory = { turns: [], rollups: [], rolledUpCount: 0 };
+let memory = emptyMemory();
 let logBookId = null;     // 当前已加载记忆的 bookId
 let isRollingUp = false;  // 大总结进行中锁
-const ROLLUP_EVERY = 10;  // 每满 N 条小总结整合一次
-
-function memKey(bookId) { return 'wbe-memory:' + (bookId || 'unsaved'); }
-function emptyMemory() { return { turns: [], rollups: [], rolledUpCount: 0 }; }
 
 // ===== 会话/记忆持久化：后端 SQLite（容量不受 localStorage 限制），localStorage 仅作一次性迁移源 =====
-// 写操作串行入队，避免并发 PUT 互相覆盖；失败只告警不阻断（下次保存会重写全量）
-let persistQueue = Promise.resolve();
+// 网络、鉴权与串行 PUT 由 repository 层负责；chat.js 只保留兼容调用名。
+const aiDataRepository = createAiDataRepository({
+  fetchImpl: (...args) => fetch(...args),
+  getAuthHeaders: async () => {
+    const { authHeaders } = await import('./auth.js');
+    return authHeaders();
+  },
+  onWriteError: (error, bookId) => {
+    console.warn('[WBE] 持久化失败（book ' + bookId + '）:', error.message);
+  }
+});
 function persistPut(bookId, payload) {
-  persistQueue = persistQueue.then(async () => {
-    try {
-      const { authHeaders } = await import('./auth.js');
-      await fetch('/api/ai-data/' + bookId, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify(payload)
-      });
-    } catch (e) {
-      console.warn('[WBE] 持久化失败（book ' + bookId + '）:', e.message);
-    }
-  });
-  return persistQueue;
-}
-async function persistFetch(bookId) {
-  const { authHeaders } = await import('./auth.js');
-  const r = await fetch('/api/ai-data/' + bookId, { headers: authHeaders() });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  return r.json();
+  return aiDataRepository.write(bookId, payload);
 }
 
-// 把损坏的本地数据备份到 wbe-corrupt-backup，避免坏数据被静默重置丢失
-function backupCorruptData(key, raw) {
-  try {
-    if (raw == null) return;
-    let backups = {};
-    try {
-      const old = JSON.parse(localStorage.getItem('wbe-corrupt-backup') || '{}');
-      if (old && typeof old === 'object') backups = old;
-    } catch (e) {}
-    backups[key] = String(raw).slice(0, 500000); // 限制备份大小，防止备份本身撑爆存储
-    localStorage.setItem('wbe-corrupt-backup', JSON.stringify(backups));
-  } catch (e) {
-    console.warn('[WBE] 备份损坏数据失败:', key, e);
+function reportLegacyMigrationWarning(code, error, meta = {}) {
+  if (code === 'session_remote_load_failed') {
+    console.warn('[WBE] 会话历史加载失败:', error.message);
+  } else if (code === 'sessions_local_corrupt') {
+    console.warn('[WBE] 会话历史数据损坏，已重置:', meta.key, error);
+  } else if (code === 'legacy_chat_corrupt') {
+    console.warn('[WBE] 旧版会话历史损坏，跳过迁移:', error.message);
+  } else if (code === 'memory_remote_migration_failed') {
+    console.warn('[WBE] 书级记忆迁移(后端)失败:', error.message);
+  } else if (code === 'memory_local_migration_failed') {
+    console.warn('[WBE] 书级记忆迁移(localStorage)失败:', error.message);
+  } else if (code === 'corrupt_backup_failed') {
+    console.warn('[WBE] 备份损坏数据失败:', meta.key, error);
   }
 }
 
+const legacyAiDataMigration = createLegacyAiDataMigration({
+  storage: localStorage,
+  repository: aiDataRepository,
+  makeSession,
+  titleFromMessages,
+  normalizeMemory,
+  emptyMemory,
+  onWarning: reportLegacyMigrationWarning,
+  onCorruptSessions: () => {
+    import('./utils.js').then(m => m.showToast('会话历史数据损坏，已备份并重置', 'error'));
+  }
+});
+
 function saveMemory() {
   try {
-    // 上限控制：超出丢弃最旧的；优先丢弃已被大总结覆盖的最旧部分，保持 rolledUpCount 语义
-    if (memory.turns.length > MAX_MEMORY_TURNS) {
-      const excess = memory.turns.length - MAX_MEMORY_TURNS;
-      const dropFromRolled = Math.min(excess, memory.rolledUpCount);
-      if (dropFromRolled > 0) {
-        memory.turns.splice(0, dropFromRolled);
-        memory.rolledUpCount -= dropFromRolled;
-      }
-      if (memory.turns.length > MAX_MEMORY_TURNS) {
-        memory.turns.splice(0, memory.turns.length - MAX_MEMORY_TURNS);
-        if (memory.rolledUpCount > memory.turns.length) memory.rolledUpCount = memory.turns.length;
-      }
-    }
-    if (memory.rollups.length > MAX_MEMORY_ROLLUPS) memory.rollups = memory.rollups.slice(-MAX_MEMORY_ROLLUPS);
+    // 会话模型统一执行记忆上限规则，保持 rolledUpCount 语义。
+    enforceMemoryLimits(memory);
     // 会话级记忆：写入当前会话对象，随会话一起持久化
     const cur = sessions.find(s => s.id === activeSessionId);
     if (cur) cur.memory = memory;
@@ -118,91 +120,29 @@ function saveMemory() {
     import('./utils.js').then(m => m.showToast('记忆保存失败', 'error'));
   }
 }
-function recentTurns() { return memory.turns.slice(memory.rolledUpCount); }
+function recentTurns() { return recentMemoryTurns(memory); }
 
 // ===== 对话历史持久化（按世界书保存，支持多会话并行） =====
-function sessionsKey(bookId) { return 'wbe-sessions:' + (bookId || 'unsaved'); }
-function activeKey(bookId) { return 'wbe-active-session:' + (bookId || 'unsaved'); }
-
-const MAX_SESSIONS = 20; // 每本书最多保留的会话数（超出丢弃最旧不活跃的）
-
 let sessions = [];          // 当前书的会话列表
 let activeSessionId = null; // 活动会话 id
-
-function makeSession() {
-  return { id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now(), aiTitled: false, memory: emptyMemory(), tokensTotal: 0 };
-}
 
 // 累计本会话的发送 token（持久化在 session 对象，随 saveChatHistory 落库）
 function accumulateSessionTokens() {
   const cur = sessions.find(s => s.id === activeSessionId);
-  if (cur) cur.tokensTotal = (cur.tokensTotal || 0) + (lastTokensTotal || 0);
-}
-
-function titleFromMessages(msgs) {
-  const first = msgs.find(m => m.role === 'user');
-  if (!first) return '新对话';
-  const t = String(first.content || '').replace(/\s+/g, ' ').trim();
-  return t.length > 14 ? t.slice(0, 14) + '…' : (t || '新对话');
+  addSessionTokens(cur, lastTokensTotal);
 }
 
 async function loadChatHistory(bookId) {
-  let data = null;
-  try {
-    data = await persistFetch(bookId);
-  } catch (e) {
-    console.warn('[WBE] 会话历史加载失败:', e.message);
-  }
-  let list = data && Array.isArray(data.sessions) ? data.sessions : null;
-  let activeId = data ? data.activeSession : null;
-  if (!list) {
-    // 一次性迁移：localStorage 旧数据 → 上传后端后删除
-    const key = sessionsKey(bookId);
-    let raw = null;
-    try { raw = localStorage.getItem(key); } catch {}
-    let local = null;
-    try { local = raw ? JSON.parse(raw) : null; } catch (e) {
-      console.warn('[WBE] 会话历史数据损坏，已重置:', key, e);
-      backupCorruptData(key, raw);
-      import('./utils.js').then(m => m.showToast('会话历史数据损坏，已备份并重置', 'error'));
-    }
-    if (!Array.isArray(local)) {
-      // 迁移旧版单会话历史 wbe-chat:<bookId>
-      let old = [];
-      try {
-        const oldRaw = localStorage.getItem('wbe-chat:' + (bookId || 'unsaved'));
-        if (oldRaw) old = JSON.parse(oldRaw);
-      } catch (e) { console.warn('[WBE] 旧版会话历史损坏，跳过迁移:', e.message); }
-      local = [];
-      if (Array.isArray(old) && old.length) {
-        const s = makeSession();
-        s.messages = old;
-        s.title = titleFromMessages(old);
-        local.push(s);
-      }
-    }
-    if (local.length) {
-      list = local;
-      activeId = localStorage.getItem(activeKey(bookId)) || null;
-      persistPut(bookId, { sessions: list, activeSession: activeId });
-    }
-    try {
-      localStorage.removeItem(key);
-      localStorage.removeItem(activeKey(bookId));
-      localStorage.removeItem('wbe-chat:' + (bookId || 'unsaved'));
-    } catch {}
-  }
-  sessions = (list || []).filter(s => s && Array.isArray(s.messages));
-  const target = sessions.find(s => s.id === activeId) || sessions[sessions.length - 1] || null;
+  const seed = await legacyAiDataMigration.loadSessionSeed(bookId);
+  sessions = normalizeSessionList(seed.sessions);
+  const target = selectActiveSession(sessions, seed.activeSession);
   activeSessionId = target ? target.id : null;
   chatMessages.length = 0;
   if (target) {
-    for (const m of target.messages) {
-      if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') chatMessages.push({ role: m.role, content: m.content });
-    }
-    // 会话级记忆：若该会话还没有记忆，迁移旧的「书级记忆」（后端 ai_data / localStorage）到该会话
+    chatMessages.push(...visibleMessagesFromSession(target));
+    // 会话级记忆：若该会话还没有记忆，迁移旧的「书级记忆」到该会话。
     if (!target.memory) {
-      target.memory = await migrateLegacyMemory(bookId);
+      target.memory = await legacyAiDataMigration.migrateLegacyMemory(bookId);
     }
     memory = normalizeMemory(target.memory);
   } else {
@@ -211,50 +151,12 @@ async function loadChatHistory(bookId) {
   updateMemoryBadge();
 }
 
-// 记忆归一：容忍缺字段/旧结构
-function normalizeMemory(m) {
-  return { turns: (m && m.turns) || [], rollups: (m && m.rollups) || [], rolledUpCount: (m && m.rolledUpCount) || 0 };
-}
-
-// 旧书级记忆一次性迁移：后端 ai_data.memory 或 localStorage wbe-memory:<bookId> → 当前会话
-async function migrateLegacyMemory(bookId) {
-  try {
-    const data = await persistFetch(bookId);
-    if (data && data.memory) {
-      persistPut(bookId, { memory: null }); // 迁移后清空后端书级记忆
-      return normalizeMemory(data.memory);
-    }
-  } catch (e) { console.warn('[WBE] 书级记忆迁移(后端)失败:', e.message); }
-  try {
-    const key = memKey(bookId);
-    const raw = localStorage.getItem(key);
-    if (raw) {
-      const m = JSON.parse(raw);
-      localStorage.removeItem(key);
-      if (m && (m.turns || m.rollups)) return normalizeMemory(m);
-    }
-  } catch (e) { console.warn('[WBE] 书级记忆迁移(localStorage)失败:', e.message); }
-  return emptyMemory();
-}
-
 function saveChatHistory() {
   try {
     const cur = sessions.find(s => s.id === activeSessionId);
-    if (cur) {
-      cur.messages = chatMessages.slice();
-      cur.updatedAt = Date.now();
-      if (!cur.aiTitled && (!cur.title || cur.title === '新对话')) cur.title = titleFromMessages(chatMessages);
-    }
-    // 会话数上限：保留最近更新的 MAX_SESSIONS 个（活动会话始终保留）
-    if (sessions.length > MAX_SESSIONS) {
-      const active = sessions.find(s => s.id === activeSessionId);
-      const others = sessions.filter(s => s.id !== activeSessionId)
-        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-        .slice(0, MAX_SESSIONS - (active ? 1 : 0));
-      sessions.length = 0;
-      if (active) sessions.push(active);
-      sessions.push(...others);
-    }
+    if (cur) updateSessionFromChat(cur, chatMessages);
+    // 会话数上限规则由 session model 统一维护。
+    sessions = pruneSessions(sessions, activeSessionId);
     persistPut(logBookId, { sessions, activeSession: activeSessionId });
   } catch (e) {
     console.warn('[WBE] 会话历史保存失败:', e);
@@ -394,20 +296,12 @@ function summarizeTools(trace) {
 function pushTurnMemory({ user, trace, reply }) {
   const toolSummary = summarizeTools(trace);
   const actionSummary = summarizeToolTraceForMemory(trace);
-  const cleanReply = (reply || '').trim();
-  if (!actionSummary && (!cleanReply || cleanReply === '(无回复)')) return;
-  memory.turns.push({
-    user: (user || '').slice(0, 200),
-    actionSummary,
-    toolSummary,
-    toolDetail: (trace || []).slice(-20),
-    reply: cleanReply.slice(0, 400),
-    ts: Date.now()
-  });
+  const record = createTurnMemoryRecord({ user, trace, reply, actionSummary, toolSummary });
+  if (!record) return;
+  memory.turns.push(record);
   saveMemory();
   updateMemoryBadge();
 }
-
 // ===== 记忆角标 + 弹窗 =====
 function updateMemoryBadge() {
   const b = $('memBadge');
@@ -472,27 +366,16 @@ function renderMemoryList() {
 }
 
 // ===== 大总结：AI 浓缩（每满 ROLLUP_EVERY 条小总结，后台异步） =====
-// 附属 AI 请求（标题生成/记忆总结/正文补全/模板生成）统一带 60s 超时，避免上游挂起卡死
-const AUX_REQUEST_TIMEOUT_MS = 60000;
-
-async function fetchCompletion(messages, opts = {}) {
-  const apiUrl = opts.apiUrl || localStorage.getItem('wbe-api-url');
-  const apiKey = opts.apiKey || localStorage.getItem('wbe-api-key');
-  const model = opts.model || localStorage.getItem('wbe-model') || 'gpt-4o';
-  if (!apiUrl || !apiKey) throw new Error('未配置 API');
-  const controller = new AbortController();
-  const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, AUX_REQUEST_TIMEOUT_MS);
-  try {
-    const resp = await streamFetch(apiUrl, apiKey, { model, messages }, controller.signal);
-    let content = '';
-    for await (const chunk of streamSSE(resp)) {
-      const delta = chunk.choices?.[0]?.delta;
-      if (delta?.content) content += delta.content;
-    }
-    return content.trim();
-  } finally {
-    clearTimeout(timer);
-  }
+// 附属 AI 请求（标题生成/记忆总结/正文补全/模板生成）统一走独立 completion client。
+const auxiliaryCompletionClient = createAuxiliaryCompletionClient({
+  getConfig: () => ({
+    apiUrl: localStorage.getItem('wbe-api-url'),
+    apiKey: localStorage.getItem('wbe-api-key'),
+    model: localStorage.getItem('wbe-model') || 'gpt-4o'
+  })
+});
+function completeAuxiliary(messages, opts = {}) {
+  return auxiliaryCompletionClient.complete(messages, opts);
 }
 
 // ===== AI 会话标题：首条消息后异步生成，失败回退截取法 =====
@@ -506,7 +389,7 @@ async function maybeGenerateTitle() {
   const targetId = activeSessionId; // 快照：标题只写给发起时的会话，避免流式期间切换会话写错
   titleGenerating = true;
   try {
-    const text = await fetchCompletion([
+    const text = await completeAuxiliary([
       { role: 'system', content: '你是标题生成器。根据对话开头概括一个简洁的对话标题：不超过 10 个汉字，不要标点，不要引号，不要解释，直接输出标题。' },
       { role: 'user', content: '对话开头：' + String(first.content || '').slice(0, 200) }
     ]);
@@ -528,38 +411,15 @@ async function maybeGenerateTitle() {
 
 async function maybeRollup() {
   if (isRollingUp) return;
-  if (memory.turns.length - memory.rolledUpCount < ROLLUP_EVERY) return;
+  const plan = planRollup(memory, ROLLUP_EVERY);
+  if (!plan) return;
   isRollingUp = true;
   updateMemoryBadge();
   if ($('memoryModal') && $('memoryModal').classList.contains('open')) renderMemoryList();
 
-  const from = memory.rolledUpCount;
-  const to = from + ROLLUP_EVERY;
-  const batch = memory.turns.slice(from, to);
-  const prevDigest = memory.rollups.map(r => r.text).join('\n');
-  const lines = batch.map((t, i) => {
-    const parts = [];
-    if (t.user) parts.push('用户：' + t.user);
-    if (t.actionSummary) parts.push('操作：' + t.actionSummary);
-    else if (t.toolSummary) parts.push('操作：完成了相关查询或修改');
-    if (t.reply) parts.push('结果：' + t.reply);
-    return (i + 1) + '. ' + parts.join('；');
-  }).join('\n');
-  const sys = '你是记忆整合器。把用户与世界书编辑助手的若干回合操作记录浓缩成一段简洁的中文阶段总结，' +
-    '保留关键的新增/修改/删除的条目名与结论，去掉重复与搜索噪声，不要逐条复述，控制在 150 字内。';
-  const usr = (prevDigest ? '已有阶段总结（供衔接，不要重复其内容）：\n' + prevDigest + '\n\n' : '') +
-    '需要整合的 ' + ROLLUP_EVERY + ' 个回合：\n' + lines;
-
   try {
-    const text = await fetchCompletion([
-      { role: 'system', content: sys },
-      { role: 'user', content: usr }
-    ]);
-    if (text) {
-      memory.rollups.push({ from, to, text });
-      memory.rolledUpCount = to;
-      saveMemory();
-    }
+    const text = await completeAuxiliary(plan.messages);
+    if (applyRollup(memory, plan, text)) saveMemory();
   } catch (e) {
     console.warn('[WBE] 记忆整合失败，下回合重试:', e.message);
   } finally {
@@ -570,37 +430,9 @@ async function maybeRollup() {
 }
 
 // 注入 system：所有大总结全文 + 最近未压缩的小总结（总长上限 8000 字符，防止上下文膨胀）
-const MEMORY_INJECTION_MAX = 8000;
-const MEMORY_INJECTION_TIGHT = 2500; // 超预算时压缩记忆注入的上限
 
 function buildMemoryInjection(maxChars = MEMORY_INJECTION_MAX) {
-  const parts = [];
-  if (memory.rollups.length) {
-    parts.push('【长期记忆 · 阶段总结】\n' + memory.rollups.map(r => '· ' + r.text).join('\n'));
-  }
-  const recent = recentTurns();
-  if (recent.length) {
-    const lines = recent.map((t, i) => {
-      const seg = [];
-      if (t.actionSummary) seg.push(t.actionSummary);
-      else if (t.toolSummary) seg.push('完成了相关查询或修改');
-      if (t.reply) seg.push(t.reply);
-      return (i + 1) + '. ' + seg.join(' → ');
-    });
-    // 按预算截断：优先保留最新的近期操作
-    let used = 0;
-    const kept = [];
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (used + lines[i].length > 6500) break;
-      kept.unshift(lines[i]);
-      used += lines[i].length;
-    }
-    if (kept.length < lines.length) kept.push('…(更早的操作已省略)');
-    parts.push('【近期操作（细节，避免重复查询已知信息）】\n' + kept.join('\n'));
-  }
-  const joined = parts.join('\n\n');
-  if (!joined) return '';
-  return '\n\n' + (joined.length <= maxChars ? joined : joined.slice(0, maxChars) + '\n…(记忆注入已截断)');
+  return buildMemoryInjectionFromState(memory, maxChars);
 }
 
 // 确保当前 memory 与 currentBookId 对应（换书/刷新后用）。currentBookId 是 live binding。
@@ -693,7 +525,7 @@ async function generateTemplateWithAI() {
       const keys = Array.isArray(e.key) ? e.key.join('、') : '';
       return '#' + e.uid + ' ' + (e.comment || '(无标题)') + (keys ? ' [' + keys + ']' : '') + '\n' + String(e.content || '').slice(0, 180);
     }).join('\n\n');
-    const text = await fetchCompletion(buildWritingTemplateGenerationMessages({ bookName: curBookName, samples }), { model, apiUrl, apiKey });
+    const text = await completeAuxiliary(buildWritingTemplateGenerationMessages({ bookName: curBookName, samples }), { model, apiUrl, apiKey });
     applyTemplateDraft(parseWritingTemplateDraft(text));
     import('./utils.js').then(m => m.showToast('已生成模板草稿，请检查后保存', 'success'));
   } catch (e) {
@@ -719,32 +551,28 @@ function trimHistory() {
 }
 
 // ===== 初始化聊天（杂志风 AI 屏） =====
+let chatComposer = null;
+
 export function initChat() {
   const $btnSendChat = $('btn-send-chat');
   const $chatInput = $('chat-input');
   const $clear = $('chatClearBtn');
-
-  if ($btnSendChat) $btnSendChat.addEventListener('click', () => {
-    if (isSending) { abortActiveChat('user'); return; } // 生成中点击 → 停止
-    sendChat();
-  });
-
-  // 滚动跟随 + 「回到底部」浮钮（滚动容器是 .app）
   const scroller = getChatScroller();
-  if (scroller) scroller.addEventListener('scroll', updateToBottomBtn, { passive: true });
   const $toBottom = $('chatToBottom');
-  if ($toBottom) $toBottom.addEventListener('click', () => scrollChatToBottom());
 
-  if ($chatInput) {
-    $chatInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
-    });
-    // 自动撑高
-    $chatInput.addEventListener('input', () => {
-      $chatInput.style.height = 'auto';
-      $chatInput.style.height = Math.min($chatInput.scrollHeight, 120) + 'px';
-    });
-  }
+  if (chatComposer) chatComposer.dispose();
+  chatComposer = createChatComposer({
+    sendButton: $btnSendChat,
+    input: $chatInput,
+    scroller,
+    toBottomButton: $toBottom,
+    getIsSending: () => isSending,
+    onSend: () => sendChat(),
+    onStop: () => abortActiveChat('user'),
+    onScroll: updateToBottomBtn,
+    onToBottom: scrollChatToBottom
+  });
+  chatComposer.bind();
 
   // 记忆按钮 + 弹窗
   const $mem = $('chatMemoryBtn');
@@ -835,79 +663,34 @@ export function initChat() {
 // msgEl 可能是 .chat-msg-text（流式气泡）或外层 .chat-msg：按钮行统一挂外层气泡
 // idx 缺省时取最后一条消息（流式完成场景，修复此前 undefined 索引导致点击无效）
 // 复制消息文本：navigator.clipboard 失败时降级 textarea + execCommand（http 环境可用）
-function copyMsgText(i) {
+async function copyMsgText(i) {
   const m = chatMessages[i];
   const text = m ? String(m.content || '') : '';
-  if (!text) { import('./utils.js').then(u => u.showToast('没有可复制的内容', 'info')); return; }
-  const done = () => import('./utils.js').then(u => u.showToast('已复制到剪贴板', 'success'));
-  const fallback = () => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-    document.body.removeChild(ta);
-    if (ok) done(); else import('./utils.js').then(u => u.showToast('复制失败', 'error'));
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done).catch(fallback);
-  } else fallback();
+  if (!text) {
+    import('./utils.js').then(u => u.showToast('没有可复制的内容', 'info'));
+    return;
+  }
+  try {
+    const copied = await copyText(text, { navigatorRef: navigator, documentRef: document });
+    import('./utils.js').then(u => u.showToast(copied ? '已复制到剪贴板' : '复制失败', copied ? 'success' : 'error'));
+  } catch (e) {
+    console.warn('[WBE] 复制消息失败:', e);
+    import('./utils.js').then(u => u.showToast('复制失败', 'error'));
+  }
 }
 
+const messageActionsView = createMessageActionsView({
+  documentRef: document,
+  getMessages: () => chatMessages,
+  getTokenBudget: () => TOKEN_BUDGET,
+  onResend: () => resendLast(),
+  onCopy: i => copyMsgText(i),
+  onEdit: (i, msgEl) => startEditMsg(msgEl, i),
+  onDelete: (i, msgEl) => deleteMsg(i, msgEl)
+});
+
 function attachMsgRow(msgEl, idx) {
-  const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
-  if (!host || host.querySelector('.chat-msg-actions')) return;
-  const i = idx != null ? Number(idx) : chatMessages.length - 1;
-  const m = chatMessages[i];
-  if (!m || (m.role !== 'user' && m.role !== 'assistant')) return;
-  const row = document.createElement('div');
-  row.className = 'chat-msg-actions';
-  if (m.role === 'assistant') {
-    const resend = document.createElement('button');
-    resend.type = 'button';
-    resend.className = 'chat-msg-act';
-    resend.title = '重新生成';
-    resend.setAttribute('aria-label', '重新生成');
-    resend.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a9 9 0 0 1 15-6.7L21 8"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a9 9 0 0 1-15 6.7L3 16"/></svg><span>重新生成</span>';
-    resend.addEventListener('click', resendLast);
-    row.appendChild(resend);
-  }
-  const copy = document.createElement('button');
-  copy.type = 'button';
-  copy.className = 'chat-msg-act';
-  copy.title = '复制这条消息';
-  copy.setAttribute('aria-label', '复制这条消息');
-  copy.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>复制</span>';
-  copy.addEventListener('click', () => copyMsgText(i));
-  row.appendChild(copy);
-  const edit = document.createElement('button');
-  edit.type = 'button';
-  edit.className = 'chat-msg-act';
-  edit.title = '编辑这条消息';
-  edit.setAttribute('aria-label', '编辑这条消息');
-  edit.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>编辑</span>';
-  edit.addEventListener('click', () => startEditMsg(msgEl, i));
-  row.appendChild(edit);
-  const del = document.createElement('button');
-  del.type = 'button';
-  del.className = 'chat-msg-act';
-  del.title = '删除这条消息';
-  del.setAttribute('aria-label', '删除这条消息');
-  del.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg><span>删除</span>';
-  del.addEventListener('click', () => deleteMsg(i, msgEl));
-  row.appendChild(del);
-  // token 标签：assistant 消息带该轮上下文估算（彩色胶囊，持久化在消息对象上）
-  if (m.role === 'assistant' && m.tokens) {
-    const pill = document.createElement('span');
-    pill.className = 'chat-token-pill' + (m.tokens > TOKEN_BUDGET ? ' over' : '');
-    pill.textContent = '≈ ' + m.tokens.toLocaleString() + ' tok';
-    pill.title = '该轮发送给模型的上下文估算';
-    row.appendChild(pill);
-  }
-  host.appendChild(row);
+  return messageActionsView.attach(msgEl, idx);
 }
 
 // 从工具参数里取草稿标题（预览中断时用）
@@ -933,43 +716,29 @@ function toolCleanupBook() {
 function attachResendBtn(msgEl, idx) { attachMsgRow(msgEl, idx); }
 function attachMsgActions(msgEl, idx) { attachMsgRow(msgEl, idx); }
 
-function startEditMsg(msgEl, idx) {
-  const i = idx != null ? Number(idx) : -1;
-  const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
-  if (!host || i < 0 || i >= chatMessages.length || host.classList.contains('chat-msg-editing')) return;
-  const textEl = msgEl.classList.contains('chat-msg-text') ? msgEl : msgEl.querySelector('.chat-msg-text');
-  const cur = chatMessages[i];
-  if (!textEl || !cur) return;
-  host.classList.add('chat-msg-editing');
-  const ta = document.createElement('textarea');
-  ta.className = 'chat-msg-edit-textarea';
-  ta.value = cur.content;
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'action primary';
-  saveBtn.textContent = '保存';
-  const cancelBtn = document.createElement('button');
-  cancelBtn.className = 'action';
-  cancelBtn.textContent = '取消';
-  const actions = document.createElement('div');
-  actions.className = 'chat-msg-edit-actions';
-  actions.appendChild(cancelBtn);
-  actions.appendChild(saveBtn);
-  textEl.innerHTML = '';
-  textEl.appendChild(ta);
-  textEl.appendChild(actions);
-  ta.focus();
-  saveBtn.addEventListener('click', () => {
-    const v = ta.value.trim();
-    if (!v) { import('./utils.js').then(m => m.showToast('内容不能为空', 'error')); return; }
-    cur.content = v;
+const messageEditView = createMessageEditView({
+  documentRef: document,
+  onEmpty: () => import('./utils.js').then(m => m.showToast('内容不能为空', 'error')),
+  onCancel: () => renderChatHistory(),
+  onSave: (i, value) => {
+    const cur = chatMessages[i];
+    if (!cur) return;
+    cur.content = value;
     // 首条 user 消息变化时同步会话标题（未 AI 命名时）
     const s = sessions.find(x => x.id === activeSessionId);
     if (s && !s.aiTitled) s.title = titleFromMessages(chatMessages);
     saveChatHistory();
     renderChatHistory(); // 全量重渲染，统一恢复编辑/删除按钮与索引
     import('./utils.js').then(m => m.showToast('已更新消息', 'success'));
-  });
-  cancelBtn.addEventListener('click', () => renderChatHistory());
+  }
+});
+
+function startEditMsg(msgEl, idx) {
+  const i = idx != null ? Number(idx) : -1;
+  if (i < 0 || i >= chatMessages.length) return;
+  const cur = chatMessages[i];
+  if (!cur) return;
+  return messageEditView.start(msgEl, i, cur.content);
 }
 
 function deleteMsg(idx, msgEl) {
@@ -1001,219 +770,30 @@ function resendLast() {
   sendChat(userText);
 }
 
-// ===== 流式 SSE 解析 =====
-async function* streamSSE(response) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('data:')) {
-        // 兼容 "data: xxx" 与无空格的 "data:xxx" 两种格式
-        const data = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
-        if (data === '[DONE]') return;
-        try { yield JSON.parse(data); } catch {}
-      }
-    }
-  }
-}
-
-// ===== 流式 fetch 请求 =====
-async function streamFetch(apiUrl, apiKey, body, signal) {
-  // 经本地后端代理转发流式 SSE，绕开第三方网关缺 CORS 头的问题
-  const { authHeaders } = await import('./auth.js');
-  const resp = await fetch('/api/proxy/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ url: apiUrl, key: apiKey, body: { ...body, stream: true } }),
-    signal
-  });
-  if (!resp.ok) throw new Error('API ' + resp.status + ': ' + await resp.text());
-  return resp;
-}
-
 // ===== 流式显示文本 =====
+const assistantStreamView = createAssistantStreamView();
+
 async function streamDisplay(response, msgEl) {
-  let content = '';
-  let reasoning = '';
-  let toolCalls = [];
-  for await (const chunk of streamSSE(response)) {
-    const delta = chunk.choices?.[0]?.delta;
-    if (!delta) continue;
-    const reasoningDelta = extractReasoningDelta(delta);
-    if (reasoningDelta) {
-      reasoning += reasoningDelta;
+  return consumeAssistantStream(streamSSE(response), {
+    extractReasoning: extractReasoningDelta,
+    onUpdate: ({ content, reasoning }) => {
       renderAssistantStream(msgEl, content, reasoning, true);
       if (isChatNearBottom()) scrollChatToBottom();
+    },
+    onComplete: ({ content, reasoning }) => {
+      collapseReasoningAfterStream(msgEl, reasoning);
+      // 冲刷最后一帧：rAF 节流下最后一帧可能仍在排队，这里同步补一帧收尾。
+      renderAssistantStream(msgEl, content, reasoning, false);
     }
-    if (delta.content) {
-      content += delta.content;
-      renderAssistantStream(msgEl, content, reasoning, true);
-      if (isChatNearBottom()) scrollChatToBottom(); // 贴底才跟随；用户上翻则不打扰
-    }
-    if (delta.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        const idx = tc.index ?? 0;
-        if (!toolCalls[idx]) toolCalls[idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
-        if (tc.id) toolCalls[idx].id = tc.id;
-        if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
-        if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
-      }
-    }
-  }
-  collapseReasoningAfterStream(msgEl, reasoning);
-  // 冲刷最后一帧：rAF 节流下最后一帧可能仍在排队，这里以「非流式」姿态补一帧收尾
-  renderAssistantStream(msgEl, content, reasoning, false);
-  // 压实：某些代理(Anthropic→OpenAI)用 content block index 当 tool_calls index，
-  // 文本块占 0 导致数组出现空洞，filter 去掉空洞并丢弃没拿到函数名的残块
-  const compact = toolCalls.filter(tc => tc && tc.function && tc.function.name);
-  return { content, reasoning, tool_calls: compact.length > 0 ? compact : null };
+  });
 }
 
 function collapseReasoningAfterStream(msgEl, reasoning) {
-  if (!shouldCollapseReasoningAfterStream(reasoning)) return;
-  const box = msgEl.querySelector('.reasoning-box');
-  if (box) box.open = false;
+  assistantStreamView.collapse(msgEl, reasoning);
 }
 
-// 流式渲染：requestAnimationFrame 节流（同一帧最多渲染一次），
-// 结构稳定后只增量更新正文/思考内容，避免每个 delta 全量重写 + 全量 markdown 解析。
-// 非流式（reasoningOpen=false，如流结束冲刷、最终回复）同步渲染，
-// 保证后续 append 的子元素（如「重新生成」按钮）不会被延迟的 rAF 整帧重建抹掉。
-let streamRenderRaf = null;
 function renderAssistantStream(msgEl, content, reasoning, reasoningOpen = false) {
-  const doRender = () => {
-    const textEl = msgEl.querySelector('.stream-content');
-    const rb = msgEl.querySelector('.reasoning-box');
-    // 结构缺失（首帧 / 思考块新出现）才整体重建，否则增量更新
-    const needRebuild = !textEl || (reasoning && !rb);
-    if (needRebuild) {
-      const parts = [];
-      if (reasoning) {
-        parts.push('<details class="reasoning-box"' + (reasoningDetailsShouldBeOpen(reasoning, reasoningOpen) ? ' open' : '') + '>' +
-          '<summary>思考</summary>' +
-          '<div class="reasoning-text">' + formatChatText(reasoning) + '</div>' +
-          '</details>');
-      }
-      if (content) parts.push('<div class="stream-content">' + formatChatText(content) + '</div>');
-      else if (!reasoning) parts.push('<span class="typing-cursor">◊</span>');
-      msgEl.innerHTML = parts.join('');
-    } else {
-      if (content) textEl.innerHTML = formatChatText(content);
-      else if (!reasoning) textEl.innerHTML = '<span class="typing-cursor">◊</span>';
-      if (rb && reasoning) {
-        const rt = rb.querySelector('.reasoning-text');
-        if (rt) rt.innerHTML = formatChatText(reasoning);
-      }
-    }
-  };
-  if (reasoningOpen) {
-    // 流式高频调用：同一帧只渲染最后一次
-    if (streamRenderRaf) cancelAnimationFrame(streamRenderRaf);
-    streamRenderRaf = requestAnimationFrame(() => {
-      streamRenderRaf = null;
-      doRender();
-    });
-  } else {
-    if (streamRenderRaf) { cancelAnimationFrame(streamRenderRaf); streamRenderRaf = null; }
-    doRender();
-  }
-}
-
-// ===== 格式化聊天文本（简单 markdown） =====
-function mdInline(s) {
-  // 已是转义后的文本，处理行内 markdown
-  s = s.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
-  // 链接 URL 必须经 escUrl 转义 + 协议白名单（http/https/mailto），
-  // 否则 AI 输出的 [x](https://a.com/"onmouseover="alert(1)) 可属性注入窃取 localStorage
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, url) => {
-    const safeUrl = escUrl(url);
-    return safeUrl ? '<a href="' + safeUrl + '" target="_blank" rel="noopener">' + label + '</a>' : m;
-  });
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  s = s.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
-  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-  return s;
-}
-
-function formatChatText(text) {
-  if (!text) return '';
-  // 先抽出围栏代码块，避免被行级规则破坏
-  const blocks = [];
-  let src = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    blocks.push('<pre><code>' + escHtml(code.replace(/\n$/, '')) + '</code></pre>');
-    return ' B' + (blocks.length - 1) + ' ';
-  });
-
-  const lines = src.split('\n');
-  let html = '';
-  let listType = null; // 'ul' | 'ol'
-  const closeList = () => { if (listType) { html += '</' + listType + '>'; listType = null; } };
-  const splitRow = (s) => s.replace(/^\s*\|?/, '').replace(/\|?\s*$/, '').split('|').map(c => c.trim());
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i];
-    const ph = raw.match(/^ B(\d+) $/);
-    if (ph) { closeList(); html += blocks[+ph[1]]; continue; }
-
-    const line = raw;
-    if (/^\s*$/.test(line)) { closeList(); continue; }
-
-    // GFM 表格：当前行含 |，下一行是分隔行(---/:---:)
-    const next = lines[i + 1];
-    if (line.includes('|') && next && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(next) && next.includes('-')) {
-      closeList();
-      const headers = splitRow(line);
-      const aligns = splitRow(next).map(c => {
-        const l = c.startsWith(':'), r = c.endsWith(':');
-        return r && l ? 'center' : r ? 'right' : l ? 'left' : '';
-      });
-      const al = (c) => aligns[c] ? ' style="text-align:' + aligns[c] + '"' : '';
-      let tbl = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
-      headers.forEach((h, c) => { tbl += '<th' + al(c) + '>' + mdInline(escHtml(h)) + '</th>'; });
-      tbl += '</tr></thead><tbody>';
-      let j = i + 2;
-      for (; j < lines.length && lines[j].includes('|') && !/^\s*$/.test(lines[j]); j++) {
-        const cells = splitRow(lines[j]);
-        tbl += '<tr>';
-        for (let c = 0; c < headers.length; c++) tbl += '<td' + al(c) + '>' + mdInline(escHtml(cells[c] || '')) + '</td>';
-        tbl += '</tr>';
-      }
-      tbl += '</tbody></table></div>';
-      html += tbl;
-      i = j - 1;
-      continue;
-    }
-
-    let m;
-    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
-      closeList();
-      const lv = m[1].length;
-      html += '<h' + lv + ' class="md-h">' + mdInline(escHtml(m[2])) + '</h' + lv + '>';
-    } else if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(line)) {
-      closeList(); html += '<hr class="md-hr">';
-    } else if ((m = line.match(/^\s*>\s?(.*)$/))) {
-      closeList(); html += '<blockquote class="md-quote">' + mdInline(escHtml(m[1])) + '</blockquote>';
-    } else if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
-      if (listType !== 'ul') { closeList(); html += '<ul class="md-list">'; listType = 'ul'; }
-      html += '<li>' + mdInline(escHtml(m[1])) + '</li>';
-    } else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
-      if (listType !== 'ol') { closeList(); html += '<ol class="md-list">'; listType = 'ol'; }
-      html += '<li>' + mdInline(escHtml(m[1])) + '</li>';
-    } else {
-      closeList(); html += '<p class="md-p">' + mdInline(escHtml(line)) + '</p>';
-    }
-  }
-  closeList();
-  return html;
+  assistantStreamView.render(msgEl, content, reasoning, reasoningOpen);
 }
 
 // ===== 聊天滚动 =====
@@ -1258,91 +838,60 @@ function updateToBottomBtn() {
   btn.hidden = !onChat || isChatNearBottom();
 }
 
-// ===== 创建 AI 消息占位 =====
+// ===== Chat DOM renderer =====
+const chatRenderer = createChatRenderer({
+  documentRef: document,
+  getContainer: () => $('chat-messages'),
+  getMessageCount: () => chatMessages.length,
+  attachAssistantActions: (el, idx) => attachResendBtn(el, idx),
+  attachUserActions: (el, idx) => attachMsgActions(el, idx),
+  applyVisibleLimit: applyChatVisibleLimit,
+  isNearBottom: isChatNearBottom,
+  scrollToBottom: scrollChatToBottom,
+  onOpenEntry: uid => {
+    selectEntry(uid);
+    document.dispatchEvent(new CustomEvent('wbe:goto-editor'));
+  },
+  onUndoTurn: base => undoThisTurn(base),
+  getTurnUndoBase: () => turnUndoBase
+});
+
 function createAssistantBubble() {
-  const container = $('chat-messages');
-  const welcome = container.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-  const div = document.createElement('div');
-  div.className = 'chat-msg chat-msg-assistant';
-  div.innerHTML = '<div class="chat-msg-role">AI</div><div class="chat-msg-text"><span class="typing-cursor">◊</span></div>';
-  container.appendChild(div);
-  applyChatVisibleLimit();
-  scrollChatToBottom(); // 新回复开始：强制滚到最后一条
-  return div.querySelector('.chat-msg-text');
+  return chatRenderer.createAssistantBubble();
 }
 
 // ===== 发送按钮忙碌态 =====
 let isSending = false;
 function setSendBusy(busy) {
-  isSending = busy;
-  const btn = $('btn-send-chat');
-  if (btn) {
-    btn.classList.toggle('is-busy', busy);
-    // 忙碌时按钮变为「停止」：保持可点击，点击即中断生成（spinner 图标复用现有样式）
-    btn.disabled = false;
-    btn.setAttribute('aria-label', busy ? '停止生成' : '发送');
-  }
-  const input = $('chat-input');
-  if (input) input.classList.toggle('sending', busy);
+  isSending = !!busy;
+  if (chatComposer) chatComposer.setBusy(isSending);
 }
 
 // ===== sendChat =====
 const MAX_ROUNDS = 12;              // 工具调用轮数上限（原 25，平方级膨胀，降到 12 控制上下文）
 const STREAM_TIMEOUT_MS = 120000;   // 主对话流式请求超时（超时自动 abort 并复位 UI）
-const TOOL_DETAIL_MAX = 800;        // 工具结果 detail 注入上下文的最大长度（搜索类结果足够，控制上下文膨胀）
 const TOKEN_BUDGET = 16000;         // 每轮请求上下文 token 预算（超预算两档降级）
 let lastTokensTotal = 0;            // 最近一轮实际发送的上下文估算（写入 assistant 消息，按钮行显示）
 
-// 估算整组消息的 token 总数（含 tool_calls 的 JSON 序列化）
-function countMessagesTokens(messages) {
-  return (messages || []).reduce((s, m) =>
-    s + estimateTokens(m && m.content) + estimateTokens(m && m.tool_calls ? JSON.stringify(m.tool_calls) : ''), 0);
-}
-
-// 折叠最旧消息直到估算 ≤ 预算。安全规则：
-// 带 tool_calls 的 assistant 消息与其后续 tool 结果成对移除，避免破坏 function calling 协议。
-function trimToBudget(messages, budget) {
-  const system = messages[0];
-  const rest = messages.slice(1);
-  let total = countMessagesTokens(messages);
-  let folded = 0;
-  while (rest.length > 1 && total > budget) {
-    const removed = rest.shift();
-    if (removed && removed.role === 'assistant' && removed.tool_calls) {
-      while (rest.length && rest[0].role === 'tool') rest.shift();
-    }
-    folded++;
-    total = countMessagesTokens([system, ...rest]);
-  }
-  if (folded > 0) rest.unshift({ role: 'user', content: '（为控制上下文长度，较早的对话已折叠，无需回溯，继续当前任务即可）' });
-  return [system, ...rest];
-}
-
-function genToolCallId() {
-  return 'call_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-}
-
-// 工具结果 detail 截断：防止全量进 messages 导致上下文平方级膨胀
-function truncateToolDetail(detail) {
-  const d = String(detail == null ? '' : detail);
-  return d.length > TOOL_DETAIL_MAX ? d.slice(0, TOOL_DETAIL_MAX) + '\n…(结果过长已截断)' : d;
-}
-
 // 单个工具执行异常隔离：出错时把错误消息作为结果返回给模型，继续后续工具
-async function safeExecuteTool(name, args) {
-  // 本回合第一个改写工具执行前打一个「回合开始」快照，作为一键撤销的精确回滚点
-  if (turnUndoBase === -1 && name !== 'undo_last') {
-    snapshotForUndo('AI 回合开始');
-    turnUndoBase = undoStackLength();
-  }
-  try {
-    return await executeTool(name, args);
-  } catch (e) {
-    console.warn('[WBE] 工具执行异常:', name, e);
-    return { summary: name + ' 执行失败', detail: '工具 ' + name + ' 执行出错: ' + (e && e.message ? e.message : String(e)) };
-  }
-}
+const MUTATING_TOOL_NAMES = new Set([
+  ...WORLD_BOOK_MUTATION_TOOL_NAMES,
+  'create_smart_entry'
+]);
+
+let dispatchTool = null;
+const safeExecuteTool = createSafeToolExecutor({
+  executeTool: (name, args) => dispatchTool(name, args),
+  isMutating: name => MUTATING_TOOL_NAMES.has(name),
+  beforeMutation: () => {
+    // Turn-level rollback is separate from per-command undo. Read-only tools never snapshot.
+    if (turnUndoBase === -1) {
+      snapshotForUndo('AI 回合开始');
+      turnUndoBase = undoStackLength();
+    }
+  },
+  onError: (error, name) => console.warn('[WBE] 工具执行异常:', name, error)
+});
 
 async function sendChat(prevText) {
   if (isSending) return; // 防止重复发送
@@ -1351,7 +900,7 @@ async function sendChat(prevText) {
   if (!text) return;
   if (prevText == null) {
     input.value = '';
-    input.style.height = 'auto'; // 复位自动高度
+    if (chatComposer) chatComposer.resetInputHeight(); // 复位自动高度由 composer 管理
   }
 
   const apiUrl = localStorage.getItem('wbe-api-url');
@@ -1389,6 +938,7 @@ async function sendChat(prevText) {
     { role: 'system', content: systemMsg },
     ...chatMessages
   ];
+
   // 上下文 token 预算：超预算时两档降级（压缩记忆注入 → 折叠最旧历史），控制成本与延迟
   let budgetLevel = 0; // 0 正常 / 1 压缩注入 / 2 折叠历史
   if (countMessagesTokens(messages) > TOKEN_BUDGET) {
@@ -1404,140 +954,95 @@ async function sendChat(prevText) {
       budgetLevel = 1;
     }
   }
-  // 本轮上下文估算：写入 assistant 回复消息，按钮行显示为 token 标签
   lastTokensTotal = countMessagesTokens(messages);
   void budgetLevel;
 
   // 流开始时的会话/世界书快照：提交结果前校验，防止写进切换后的会话/书本
   const sessionIdAtStart = activeSessionId;
   const bookIdAtStart = currentBookId;
-  // 本回合内 AI 调用了哪些工具及结果摘要，用于生成自然语言记忆。
-  const turnTrace = [];
-  // 本回合的条目级改动（新增/修改/删除），用于渲染「本轮改动」卡片与一键撤销
-  const turnChanges = [];
-  turnUndoBase = -1; // -1 = 本回合尚无改写工具执行（首个工具执行时打「回合开始」快照）
+  turnUndoBase = -1; // 首个真正写工具执行时由 safeExecuteTool 建立 AI 回合回滚边界
   setSendBusy(true);
+
   try {
-    for (let round = 0; round < MAX_ROUNDS; round++) {
-      // 每次请求独立 AbortController + 120s 超时；超时/切换会话都会 abort 并复位 UI
-      const controller = new AbortController();
-      const timer = setTimeout(() => {
-        if (activeChatAbort && activeChatAbort.controller === controller) activeChatAbort.reason = 'timeout';
-        try { controller.abort(); } catch (e) {}
-      }, STREAM_TIMEOUT_MS);
-      activeChatAbort = { controller, reason: null, sessionId: sessionIdAtStart };
-      let resp, msgEl, result;
-      try {
-        resp = await streamFetch(apiUrl, apiKey, { model, messages, tools: getTools(), tool_choice: 'auto' }, controller.signal);
-        msgEl = createAssistantBubble();
-        result = await streamDisplay(resp, msgEl);
-      } finally {
-        clearTimeout(timer);
-        // 注意：这里不清 activeChatAbort，让外层 catch 能读到超时/切换原因，由外层 finally 统一清理
+    const outcome = await runConversationTurn({
+      messages,
+      maxRounds: MAX_ROUNDS,
+
+      // Transport + streaming UI stay in chat.js as an adapter. The engine only receives
+      // the parsed round result plus an opaque context handle for presentation callbacks.
+      requestRound: async ({ messages: roundMessages }) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+          if (activeChatAbort && activeChatAbort.controller === controller) activeChatAbort.reason = 'timeout';
+          try { controller.abort(); } catch (e) {}
+        }, STREAM_TIMEOUT_MS);
+        activeChatAbort = { controller, reason: null, sessionId: sessionIdAtStart };
+        try {
+          const response = await streamFetch(
+            apiUrl,
+            apiKey,
+            { model, messages: roundMessages, tools: getTools(), tool_choice: 'auto' },
+            controller.signal
+          );
+          const msgEl = createAssistantBubble();
+          const result = await streamDisplay(response, msgEl);
+          return { result, context: msgEl };
+        } finally {
+          clearTimeout(timer);
+          // activeChatAbort intentionally stays readable until the outer catch/finally.
+        }
+      },
+
+      executeTool: safeExecuteTool,
+
+      onToolAssistant: async ({ aiText, result, context: msgEl }) => {
+        if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
+        else if (!hasVisibleAssistantStream(result.content, result.reasoning) && msgEl && msgEl.parentElement) msgEl.parentElement.remove();
+      },
+
+      onToolResult: async ({ name, result }) => {
+        appendChatMessage('tool', name + ': ' + result.summary);
       }
+    });
 
-      const textToolCalls = parseTextToolCalls(result.content || '');
-      console.log('[WBE] round', round, 'tool_calls:', result.tool_calls ? result.tool_calls.length : 0, 'textToolCalls:', textToolCalls.length);
+    if (outcome.status === 'preview-stop') {
+      const call = outcome.previewCall || { name: '', args: {} };
+      const previewText = outcome.mode === 'native'
+        ? '已生成预览「' + (draftTitleOf(call.name, call.args) || '草稿') + '」，请在弹窗中确认或取消。'
+        : '已生成预览，请在弹窗中确认或取消。';
+      chatMessages.push({ role: 'assistant', content: previewText });
+      trimHistory();
+      return;
+    }
 
-      if (result.tool_calls && result.tool_calls.length > 0) {
-        // ---- 原生 function calling ----
-        const aiText = stripToolCalls(result.content || '');
-        if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
-        else if (!hasVisibleAssistantStream(result.content, result.reasoning)) msgEl.parentElement.remove();
-
-        // 先补齐缺失的 tool_call id（占位 id），保证 assistant 消息与后续 tool 消息的
-        // tool_call_id 一一对应，避免上游 400
-        const calls = result.tool_calls.map(tc => {
-          if (!tc.id) tc.id = genToolCallId();
-          return tc;
-        });
-        messages.push({ role: 'assistant', content: result.content || null, tool_calls: calls });
-        for (const tc of calls) {
-          const callId = tc.id || genToolCallId(); // id 缺失时生成占位，避免上游 400
-          let args;
-          try {
-            args = JSON.parse(tc.function.arguments || '{}');
-          } catch (e) {
-            // 解析失败不静默吞掉：把错误信息返回给模型让它修正参数格式
-            const errDetail = '工具参数 JSON 解析失败: ' + (e && e.message || 'invalid JSON') +
-              '（参数原文: ' + String(tc.function.arguments || '').slice(0, 200) + '）。请修正参数格式后重新调用该工具。';
-            turnTrace.push(tc.function.name + ': 参数解析失败');
-            appendChatMessage('tool', tc.function.name + ': 参数解析失败');
-            messages.push({ role: 'tool', tool_call_id: callId, content: truncateToolDetail(errDetail) });
-            continue;
-          }
-          const r = await safeExecuteTool(tc.function.name, args);
-          turnTrace.push(tc.function.name + ': ' + r.summary);
-          if (r.changes && r.changes.length) turnChanges.push(...r.changes.map(c => ({ tool: tc.function.name, ...c })));
-          appendChatMessage('tool', tc.function.name + ': ' + r.summary);
-          // 原生 function calling 协议要求一个 tool_call_id 对应一条 tool 消息，不能合并；
-          // 用截断控制每条 detail 大小，控制整体膨胀
-          messages.push({ role: 'tool', tool_call_id: callId, content: truncateToolDetail(r.detail) });
-          if (r.stop) {
-            // 预览类工具（plan_smart_entry）：中断循环，等待用户在弹窗确认，禁止 AI 继续创建
-            chatMessages.push({ role: 'assistant', content: '已生成预览「' + (draftTitleOf(tc.function.name, args) || '草稿') + '」，请在弹窗中确认或取消。' });
-            trimHistory();
-            return;
-          }
-        }
-        continue; // 回到循环，AI 可继续调用工具或给出最终回复
-
-      } else if (textToolCalls.length > 0) {
-        // ---- 文本工具调用 fallback ----
-        const aiText = stripToolCalls(result.content || '');
-        if (aiText) renderAssistantStream(msgEl, aiText, result.reasoning, false);
-        else if (!hasVisibleAssistantStream(result.content, result.reasoning)) msgEl.parentElement.remove();
-
-        // 同一轮的工具结果合并成一条消息，detail 逐条截断，避免消息条数与体积膨胀
-        const toolResultsText = [];
-        for (const tc of textToolCalls) {
-          const r = await safeExecuteTool(tc.name, tc.args);
-          turnTrace.push(tc.name + ': ' + r.summary);
-          if (r.changes && r.changes.length) turnChanges.push(...r.changes.map(c => ({ tool: tc.name, ...c })));
-          appendChatMessage('tool', tc.name + ': ' + r.summary);
-          toolResultsText.push(tc.name + ' 结果: ' + r.summary + '\n' + truncateToolDetail(r.detail));
-          if (r.stop) {
-            // 预览类工具：中断，等待用户确认
-            chatMessages.push({ role: 'assistant', content: '已生成预览，请在弹窗中确认或取消。' });
-            trimHistory();
-            return;
-          }
-        }
-
-        messages.push({ role: 'assistant', content: aiText || result.content || '' });
-        messages.push({ role: 'user', content: '工具执行结果:\n' + toolResultsText.join('\n\n') + '\n\n如需更多操作可继续调用工具，否则直接回复用户。' });
-        continue;
-
-      } else {
-        // ---- 最终回复 ----
-        const clean = stripToolCalls(result.content) || '(无回复)';
-        if (clean !== result.content) renderAssistantStream(msgEl, clean, result.reasoning, false);
-        // 流式期间可能已切换会话/清空对话：快照不匹配则丢弃结果，不写进错误会话
-        if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
-          import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
-          return;
-        }
-        chatMessages.push({ role: 'assistant', content: clean, tokens: lastTokensTotal });
-        accumulateSessionTokens();
-        trimHistory();
-        attachResendBtn(msgEl); // 重新生成按钮
-        // 本回合有实际改动 → 渲染「本轮改动」卡片（可跳转/一键撤销）
-        if (turnChanges.length) appendChangesCard(turnChanges);
-        // 分层记忆：记一条回合小总结，满阈值则后台整合大总结（不阻塞）
-        pushTurnMemory({ user: text, trace: turnTrace, reply: clean });
-        maybeRollup();
+    if (outcome.status === 'final') {
+      const clean = outcome.content;
+      const msgEl = outcome.context;
+      if (clean !== outcome.rawContent) renderAssistantStream(msgEl, clean, outcome.reasoning, false);
+      if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
+        import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
         return;
       }
+      chatMessages.push({ role: 'assistant', content: clean, tokens: lastTokensTotal });
+      accumulateSessionTokens();
+      trimHistory();
+      attachResendBtn(msgEl);
+      if (outcome.turnChanges.length) appendChangesCard(outcome.turnChanges);
+      pushTurnMemory({ user: text, trace: outcome.turnTrace, reply: clean });
+      maybeRollup();
+      return;
     }
+
     // 达到轮数上限也要把已发生的过程存进历史，否则这一整轮全丢
     if (!turnStillActive(sessionIdAtStart, bookIdAtStart)) {
       import('./utils.js').then(m => m.showToast('会话已切换，本次回复已丢弃', 'info'));
       return;
     }
-    chatMessages.push({ role: 'assistant', content: '(本回合操作较多未给出总结)', tokens: lastTokensTotal });
+    const fallbackReply = '(本回合操作较多未给出总结)';
+    chatMessages.push({ role: 'assistant', content: fallbackReply, tokens: lastTokensTotal });
     accumulateSessionTokens();
     trimHistory();
-    pushTurnMemory({ user: text, trace: turnTrace, reply: '(本回合操作较多未给出总结)' });
+    pushTurnMemory({ user: text, trace: outcome.turnTrace, reply: fallbackReply });
     maybeRollup();
     appendChatMessage('error', '已达最大工具调用轮数(' + MAX_ROUNDS + ')，已停止。');
   } catch (e) {
@@ -1545,10 +1050,8 @@ async function sendChat(prevText) {
     if (aborted) {
       const reason = activeChatAbort ? activeChatAbort.reason : null;
       if (reason === 'switch') {
-        // 切换会话/清空对话主动中断：不污染新会话，只轻提示
         import('./utils.js').then(m => m.showToast('已停止当前回复', 'info'));
       } else if (reason === 'user') {
-        // 用户手动点「停止」中断
         import('./utils.js').then(m => m.showToast('已停止生成', 'info'));
       } else {
         import('./utils.js').then(m => m.showToast('请求超时，已自动停止', 'error'));
@@ -1559,77 +1062,20 @@ async function sendChat(prevText) {
       if (turnStillActive(sessionIdAtStart, bookIdAtStart)) appendChatMessage('error', '请求失败: ' + e.message);
     }
   } finally {
-    if (activeChatAbort) activeChatAbort = null; // 清理在途引用，避免悬挂
-    setSendBusy(false); // abort/超时后恢复 UI：按钮可用、isSending 复位
+    if (activeChatAbort) activeChatAbort = null;
+    setSendBusy(false);
   }
 }
 
 function appendChatMessage(role, text, idx) {
-  const container = $('chat-messages');
-  const welcome = container.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-
-  // 工具调用：连续的折叠进同一个分组，避免一堆调用刷屏
-  if (role === 'tool') { appendToolLine(container, text); return; }
-
-  const div = document.createElement('div');
-  div.className = 'chat-msg chat-msg-' + role;
-  div.dataset.idx = idx != null ? idx : chatMessages.length;
-  div.innerHTML = '<div class="chat-msg-role">' + ({user:'你',assistant:'AI',tool:'工具',error:'错误'}[role]||role) + '</div>' +
-    '<div class="chat-msg-text">' + escHtml(text) + '</div>';
-  container.appendChild(div);
-  if (role === 'assistant') attachResendBtn(div, div.dataset.idx);
-  else if (role === 'user') attachMsgActions(div, div.dataset.idx);
-  applyChatVisibleLimit();
-  // 自己发的消息和错误强制滚底；其余贴底才跟随
-  if (role === 'user' || role === 'error' || isChatNearBottom()) scrollChatToBottom();
+  return chatRenderer.appendMessage(role, text, idx);
 }
 
 // ===== 本轮改动卡片：回合内条目级改动汇总，可点条目跳转、一键撤销本轮 =====
 let turnUndoBase = 0; // sendChat 开始时撤销栈深度（一键撤销恢复到该点）
 
 function appendChangesCard(changes) {
-  const container = $('chat-messages');
-  if (!container) return;
-  const welcome = container.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-  const div = document.createElement('div');
-  div.className = 'chat-msg chat-msg-changes';
-  const head = document.createElement('div');
-  head.className = 'chat-msg-role';
-  head.textContent = '本轮改动 · ' + changes.length + ' 项';
-  const list = document.createElement('div');
-  list.className = 'changes-list';
-  const icons = { add: '＋', delete: '✕', edit: '✎', merge: '⤷', split: '⧉', other: '·' };
-  for (const c of changes) {
-    const label = (icons[c.type] || icons.other) + ' ' + (c.tool || '') + (c.comment ? '「' + c.comment + '」' : '') + (c.detail ? ' — ' + c.detail : '');
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'change-item' + (c.type === 'delete' ? ' del' : '');
-    btn.textContent = label;
-    btn.title = c.type === 'delete' ? '该条目已删除' : '打开条目';
-    if (c.uid != null && c.type !== 'delete') {
-      const uid = c.uid;
-      btn.addEventListener('click', () => {
-        selectEntry(uid);
-        document.dispatchEvent(new CustomEvent('wbe:goto-editor'));
-      });
-    } else {
-      btn.disabled = true;
-    }
-    list.appendChild(btn);
-  }
-  const undoBtn = document.createElement('button');
-  undoBtn.type = 'button';
-  undoBtn.className = 'changes-undo';
-  undoBtn.textContent = '⟲ 撤销本轮 ' + changes.length + ' 项';
-  undoBtn.addEventListener('click', () => undoThisTurn(turnUndoBase));
-  div.appendChild(head);
-  div.appendChild(list);
-  div.appendChild(undoBtn);
-  container.appendChild(div);
-  applyChatVisibleLimit();
-  if (isChatNearBottom()) scrollChatToBottom();
+  return chatRenderer.appendChangesCard(changes);
 }
 
 // 一键撤销本轮全部改动（恢复到回合开始时的「回合开始」快照）
@@ -1648,700 +1094,87 @@ function undoThisTurn(base) {
   import('./utils.js').then(m => m.showToast('已撤销本轮 ' + labels.length + ' 步', 'success'));
 }
 
-// 把连续的工具调用收进一个可展开分组（默认收起）
-function appendToolLine(container, text) {
-  let group = container.lastElementChild;
-  if (!group || !group.classList.contains('tool-group')) {
-    group = document.createElement('details');
-    group.className = 'tool-group';
-    group.innerHTML =
-      '<summary class="tool-sum">' +
-        '<span class="tool-ico">⚙</span>' +
-        '<span class="tool-sum-label">工具调用</span>' +
-        '<span class="tool-count">0</span>' +
-        '<span class="tool-latest"></span>' +
-      '</summary><div class="tool-lines"></div>';
-    container.appendChild(group);
+const mutationToolHandlers = createWorldBookMutationHandlers({
+  getEntries: getAllEntries,
+  getCurrentUid: () => currentUid,
+  nextUid,
+  createEntry,
+  runCommand: runWorldBookCommand,
+  renderSidebar,
+  renderEditor,
+  renderEditorEmpty,
+  selectEntry,
+  clearCurrentUid: () => import('./state.js').then(m => m.setCurrentUid(null)),
+  scheduleSave
+});
+
+const webSearchTool = createWebSearchTool({
+  fetchImpl: (...args) => fetch(...args),
+  getAuthHeaders: async () => {
+    const { authHeaders } = await import('./auth.js');
+    return authHeaders();
   }
-  const lines = group.querySelector('.tool-lines');
-  const sep = text.indexOf(': ');
-  const name = sep > 0 ? text.slice(0, sep) : text;
-  const summary = sep > 0 ? text.slice(sep + 2) : '';
-  const line = document.createElement('div');
-  line.className = 'tool-line';
-  line.innerHTML = '<span class="tool-line-name">' + escHtml(name) + '</span>' +
-    (summary ? '<span class="tool-line-sum">' + escHtml(summary) + '</span>' : '');
-  lines.appendChild(line);
-  group.querySelector('.tool-count').textContent = lines.children.length;
-  group.querySelector('.tool-latest').textContent = summary || name;
-  applyChatVisibleLimit();
-  if (isChatNearBottom()) scrollChatToBottom();
-}
+});
 
-// ===== AI 工具定义 =====
-function buildToolsList() {
-  return [
-    {
-      type: 'function',
-      function: {
-        name: 'search_entries',
-        description: '搜索世界书条目。返回匹配的条目列表；可带语义类型筛选，或要求返回完整正文以便跨条目编辑。',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: '搜索关键词（匹配标题、关键词、内容）；为空则匹配筛选条件下的全部' },
-            filter: { type: 'string', enum: ['all','constant','keyword','disabled'], description: '筛选类型' },
-            type: { type: 'string', enum: ['character','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '按语义类型筛选（智能写作分类），如 law=法律、magic=超凡体系；也匹配 AI 自定义分类' },
-            includeContent: { type: 'boolean', description: '是否返回每条匹配条目的完整正文（批量编辑前查看用）；默认 false 只返回标题列表' }
-          },
-          required: []
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'get_entry',
-        description: '获取指定 UID 的条目完整信息',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '条目 UID' }
-          },
-          required: ['uid']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'edit_entry',
-        description: '整字段覆盖式修改条目：传入的每个字段会被整体替换为新值（只传要改的字段）。适合换标题、整体重写某字段、改 enabled/position 等。若只是改长正文里的个别词句，请改用 replace_text 做查找替换，不要用本工具整段重写。',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '条目 UID' },
-            fields: { type: 'object', description: '要修改的字段键值对' }
-          },
-          required: ['uid', 'fields']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'add_entry',
-        description: '新建一个基础条目。若用户要你按人物/地点/组织/规则等类型写世界书，优先使用 create_smart_entry。',
-        parameters: {
-          type: 'object',
-          properties: {
-            comment: { type: 'string', description: '标题' },
-            content: { type: 'string', description: '内容' },
-            key: { type: 'array', items: { type: 'string' }, description: '触发关键词' },
-            constant: { type: 'boolean', description: '是否常驻激活，默认 false' },
-            semanticType: { type: 'string', description: '可选：人物/地点/组织/规则等语义类型' },
-            functionType: { type: 'string', description: '可选：关键词触发/常驻背景等功能类型' }
-          },
-          required: ['content']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'get_writing_template',
-        description: '读取当前世界书的写作模板。创建智能条目前可调用它参考本书偏好的正文结构、段落和禁忌。',
-        parameters: {
-          type: 'object',
-          properties: {
-            semanticType: { type: 'string', enum: ['character','location','organization','faction','event','rule','item','concept','relationship','style'], description: '可选：条目语义类型，用于筛选人物/地点/组织/规则模板' },
-            functionType: { type: 'string', enum: ['keyword_trigger','constant_background','recursive_detail','voice_constraint','plot_hook','hidden_fact','conflict_fix'], description: '可选：条目功能类型，用于附加剧情钩子等模板' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'update_writing_template',
-        description: '修改当前世界书的 AI 写作占位模板。用于用户要求微调模板时，例如“把地点模板写得更细”“给剧情钩子模板增加触发条件”。只传需要修改的标签；mode=append 表示追加，默认 replace 表示替换对应标签。不要用它写正式世界书条目正文。',
-        parameters: {
-          type: 'object',
-          properties: {
-            mode: { type: 'string', enum: ['replace','append'], description: 'replace 替换指定标签；append 追加到指定标签末尾。默认 replace。' },
-            general: { type: 'string', description: '通用占位模板，如“世界观核心：根据用户输入描述当前世界观，约150字”。' },
-            character: { type: 'string', description: '人物占位模板。' },
-            location: { type: 'string', description: '地点占位模板。' },
-            organization: { type: 'string', description: '组织占位模板。' },
-            rule: { type: 'string', description: '规则占位模板。' },
-            plot_hook: { type: 'string', description: '剧情钩子占位模板。' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'plan_smart_entry',
-        description: '生成智能世界书条目草稿并打开预览弹窗，不写入世界书。调用本工具后你会停止当前回合，等待用户在预览弹窗中确认或取消；用户确认后条目由前端写入。禁止在本回合继续调用 create_smart_entry 或其他工具，也不要假装条目已创建。复杂条目、递归条目、剧情钩子、隐藏设定优先用这个工具。',
-        parameters: smartEntryParameters()
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'create_smart_entry',
-        description: '直接创建智能世界书条目并写入数据库。除非用户明确要求直接创建，否则复杂条目优先使用 plan_smart_entry 让用户预览确认。',
-        parameters: smartEntryParameters()
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'add_entries',
-        description: '批量新建多个条目，一次传入一个数组。比逐条 add_entry 高效。',
-        parameters: {
-          type: 'object',
-          properties: {
-            entries: {
-              type: 'array',
-              description: '要新建的条目数组',
-              items: {
-                type: 'object',
-                properties: {
-                  comment: { type: 'string', description: '标题' },
-                  content: { type: 'string', description: '内容' },
-                  key: { type: 'array', items: { type: 'string' }, description: '触发关键词' },
-                  constant: { type: 'boolean', description: '是否常驻激活，默认 false' }
-                },
-                required: ['content']
-              }
-            }
-          },
-          required: ['entries']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'delete_entry',
-        description: '删除指定 UID 的条目',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '条目 UID' }
-          },
-          required: ['uid']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'delete_entries',
-        description: '批量删除条目。二选一：传 uids 数组按 UID 删，或传 filter 按条件删。',
-        parameters: {
-          type: 'object',
-          properties: {
-            uids: { type: 'array', items: { type: 'number' }, description: '要删除的 UID 列表' },
-            filter: { type: 'object', description: '筛选条件：constant(bool)、disable(bool)、uid_range([min,max])、query(关键词，匹配标题/关键词/内容)' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'batch_edit',
-        description: '批量修改条目。按条件筛选后统一更新字段。',
-        parameters: {
-          type: 'object',
-          properties: {
-            filter: { type: 'object', description: '筛选条件：可含 constant(bool)、disable(bool)、uid_range([min,max])、query(关键词，匹配标题/关键词/内容)' },
-            fields: { type: 'object', description: '要修改的字段键值对' }
-          },
-          required: ['filter', 'fields']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'list_entries',
-        description: '列出条目概览（仅 UID + 标题 + 状态，不含内容）。用于快速了解世界书全貌，比逐条搜索更省。',
-        parameters: {
-          type: 'object',
-          properties: {
-            filter: { type: 'string', enum: ['all','constant','keyword','disabled'], description: '筛选类型，默认 all' },
-            limit: { type: 'number', description: '最多返回多少条，默认 100' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'toggle_entry',
-        description: '启用或禁用条目',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '条目 UID' },
-            disable: { type: 'boolean', description: 'true=禁用，false=启用；不传则切换当前状态' }
-          },
-          required: ['uid']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'reorder_entry',
-        description: '修改条目的 order（插入顺序，数字越小越靠前）',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '条目 UID' },
-            order: { type: 'number', description: '新的 order 值' }
-          },
-          required: ['uid', 'order']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'duplicate_entry',
-        description: '复制一个已有条目，生成新 UID 的副本',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '要复制的条目 UID' }
-          },
-          required: ['uid']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'merge_entries',
-        description: '把两条或多条条目合并为一条：正文拼接、关键词取并集，其他字段取第一条的。用于清理重复设定。',
-        parameters: {
-          type: 'object',
-          properties: {
-            uids: { type: 'array', items: { type: 'number' }, description: '要合并的条目 UID 数组（2 条以上，至少 2 条）' },
-            keep: { type: 'number', description: '保留哪个 UID（默认保留第一个），其余条目删除' }
-          },
-          required: ['uids']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'split_entry',
-        description: '把一条大条目拆分成多条独立条目（如把大人物卡拆成设定+剧情钩子两条）。parts 至少 2 个。',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '要拆分的条目 UID' },
-            parts: { type: 'array', items: { type: 'object', properties: { comment: { type: 'string', description: '新条目标题' }, content: { type: 'string', description: '新条目正文' } }, required: ['comment','content'] }, description: '拆分后的条目列表（至少 2 个），原条目被删除' }
-          },
-          required: ['uid', 'parts']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'check_entries',
-        description: '全书体检：检查永不触发（无关键词且非常驻）、关键词过短/重复冲突、空正文、标题重复等质量问题。返回问题清单。',
-        parameters: { type: 'object', properties: {} }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'find_duplicates',
-        description: '查重：按标题相同/互相包含、关键词重叠(≥2)、正文开头相同找出疑似重复条目对，返回 UID 与相似原因。发现后可用 merge_entries 合并确认的重复项，或 edit_entry 调整。只读不修改。',
-        parameters: {
-          type: 'object',
-          properties: {
-            limit: { type: 'number', description: '最多返回的重复组数（默认 10，最大 20）' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'test_triggers',
-        description: '触发预演：给一段场景文本，模拟 SillyTavern 世界书触发逻辑，返回会命中哪些条目（常驻恒命中、关键词子串匹配），按注入顺序排列。检查世界书是否按预期工作。',
-        parameters: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', description: '要测试的场景文本（如一段角色对话或场景描述）' }
-          },
-          required: ['text']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'export_book',
-        description: '把当前世界书导出为 SillyTavern 兼容 JSON 文件并触发下载。',
-        parameters: { type: 'object', properties: {} }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'web_search',
-        description: '联网搜索现实资料（历史、地理、文化、法律等），供创作设定时参考。搜索结果可能不准，需甄别后使用；适合查真实世界知识，不适合查世界书内部内容。',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: '搜索词，如“唐朝宵禁制度”' },
-            limit: { type: 'integer', minimum: 1, maximum: 5, description: '返回条数，默认 3' }
-          },
-          required: ['query']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'cleanup_book',
-        description: '对当前世界书做全面体检并输出整改计划。本地执行全书检查（空正文/永不触发/关键词过短或冲突/标题重复），然后你必须输出逐项整改计划（条目、问题、建议处理方式：补全/合并/补关键词/删除），等待用户确认后再执行修改。输出计划前禁止调用任何修改类工具（edit/delete/merge/batch_edit 等）。用户要求“整理/体检/看看这本书有什么问题”时调用。',
-        parameters: { type: 'object', properties: {} }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'undo_last',
-        description: '撤销对世界书的修改（新增/删除/编辑/批量/复制等），恢复到操作前的状态；steps 大于 1 时一次回退多步',
-        parameters: {
-          type: 'object',
-          properties: {
-            steps: { type: 'integer', minimum: 1, maximum: 10, description: '回退步数，默认 1' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'get_book_info',
-        description: '获取当前世界书概览：书名、条目数、常驻/关键词/禁用分布、各语义类型条目数。规划编辑前先调用一次。',
-        parameters: { type: 'object', properties: {} }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'list_books',
-        description: '列出数据库里所有世界书（ID、书名、条目数），并标出当前打开的是哪一本',
-        parameters: { type: 'object', properties: {} }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'switch_book',
-        description: '切换到另一本世界书并打开它。可用 id 或 name 指定（name 支持模糊匹配）。',
-        parameters: {
-          type: 'object',
-          properties: {
-            id: { type: 'number', description: '目标世界书 ID（优先）' },
-            name: { type: 'string', description: '目标世界书名称（id 未提供时按名称匹配）' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'create_book',
-        description: '新建一本空白世界书并切换过去',
-        parameters: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: '新世界书名称，默认「新世界书」' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'rename_book',
-        description: '重命名世界书。不传 id 则重命名当前打开的这一本。',
-        parameters: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: '新名称' },
-            id: { type: 'number', description: '目标世界书 ID，省略则为当前世界书' }
-          },
-          required: ['name']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'replace_text',
-        description: '在条目里做查找替换，免去整段重写。默认对全书所有条目的正文(content)替换；' +
-          '可传 uid 只改一条，或传 filter 缩小范围。默认按字面匹配，可开 regex 用正则。带撤销。',
-        parameters: {
-          type: 'object',
-          properties: {
-            find: { type: 'string', description: '要查找的文本（regex=true 时为正则表达式）' },
-            replace: { type: 'string', description: '替换成的文本（regex 模式下可用 $1 等捕获组），删除则传空字符串' },
-            fields: { type: 'array', items: { type: 'string', enum: ['content', 'comment', 'key'] }, description: '在哪些字段替换，默认 ["content"]。key 为关键词数组。' },
-            uid: { type: 'number', description: '只在该 UID 条目内替换' },
-            filter: { type: 'object', description: '缩小范围：{constant:bool, disable:bool, uid_range:[min,max], query:"关键字"}，与 uid 二选一' },
-            regex: { type: 'boolean', description: '是否把 find 当正则，默认 false' },
-            ignore_case: { type: 'boolean', description: '是否忽略大小写，默认 false' }
-          },
-          required: ['find', 'replace']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'manage_keys',
-        description: '增删某条目的关键词，不用整条覆盖。add/remove 为字符串数组；secondary=true 时操作次要关键词(keysecondary)。带撤销。',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '目标条目 UID' },
-            add: { type: 'array', items: { type: 'string' }, description: '要新增的关键词（已存在的自动跳过）' },
-            remove: { type: 'array', items: { type: 'string' }, description: '要删除的关键词' },
-            secondary: { type: 'boolean', description: 'true 则操作次要关键词 keysecondary，默认操作主关键词 key' }
-          },
-          required: ['uid']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'move_entry',
-        description: '设置条目的插入位置 position（reorder_entry 只改 order 数值，这个改位置类型）。' +
-          'position: 0=角色定义前, 1=角色定义后, 2=作者注释前, 3=作者注释后, 4=@深度(配合 depth)。',
-        parameters: {
-          type: 'object',
-          properties: {
-            uid: { type: 'number', description: '目标条目 UID' },
-            position: { type: 'number', description: '位置类型 0~4，见说明' },
-            depth: { type: 'number', description: '当 position=4 时的注入深度，默认 4' }
-          },
-          required: ['uid', 'position']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'delete_book',
-        description: '删除整本世界书（不可恢复！）。不传 id 则删当前打开的这本。安全起见必须显式传 confirm:true 才真正删除。',
-        parameters: {
-          type: 'object',
-          properties: {
-            id: { type: 'number', description: '目标世界书 ID，省略则为当前打开的这本' },
-            name: { type: 'string', description: '按名称指定（id 未提供时模糊匹配）' },
-            confirm: { type: 'boolean', description: '必须为 true 才执行删除，否则只返回待确认提示' }
-          }
-        }
-      }
-    }
-  ];
-}
+const bookToolHandlers = createBookToolHandlers({
+  getEntries: getAllEntries,
+  getCurrentBookId: () => currentBookId,
+  getCurrentBookName: currentBookName,
+  getCurrentBookData: () => worldBook,
+  getOpenEntryCount: () => entries.length,
+  listBooks: loadBookList,
+  openBook: id => loadBook(id, renderSidebar, selectEntry, renderEditorEmpty),
+  createBook,
+  renameBook,
+  deleteBook,
+  fetchBook: async id => {
+    const book = await apiRequest('GET', '/api/books/' + id);
+    return book.data;
+  },
+  beforeSwitch: abortActiveChat,
+  setCurrentBookName: name => {
+    const el = $('file-name');
+    if (el) el.textContent = name;
+  },
+  cleanupDeletedBook: cleanupDeletedBookLocalData,
+  onCleanupError: (error, bookId) => console.warn('[WBE] 清理已删世界书的本地数据失败:', bookId, error),
+  onDeletedCurrentBook: handleDeletedCurrentBook
+});
 
-// 工具定义是纯静态的：模块级缓存一次，避免每轮请求重建 29 个对象
-const TOOLS_CACHE = buildToolsList();
-function getTools() { return TOOLS_CACHE; }
+const smartDraftOrchestrator = createSmartDraftOrchestrator({
+  getEntries: getAllEntries,
+  getWritingTemplate: () => loadWritingTemplate(localStorage, currentBookId),
+  completeAuxiliary,
+  nextUid,
+  createEntry,
+  runCommand: runWorldBookCommand,
+  renderSidebar,
+  scheduleSave,
+  setActiveDraft: record => setActiveSmartDraft(smartDraftState, record),
+  showDraftPreview: renderSmartDraftModal,
+  onCompletionError: error => console.warn('[WBE] 正文补全失败，保留原草稿:', error.message)
+});
 
-// 开发期一致性校验：工具定义与名单单一来源保持一致
-{
-  const missing = TOOLS_CACHE.filter(t => !TOOL_NAMES.includes(t.function.name)).map(t => t.function.name);
-  if (missing.length) console.warn('[WBE] getTools 存在名单外的工具名:', missing.join(', '));
-}
-
-function smartEntryParameters() {
-  return {
-    type: 'object',
-    properties: {
-      userRequest: { type: 'string', description: '用户原始需求，用于判断条目类型与功能' },
-      title: { type: 'string', description: '条目标题；不传则从 userRequest 推断' },
-      semanticType: { type: 'string', enum: ['character','profession','location','geography','organization','faction','law','history','economy','magic','culture','event','rule','item','concept','relationship','style'], description: '语义类型：character 人物 / profession 职业设定(空姐、警察、医生等，写职业本身而非具体个人) / location 具体地点 / geography 地理地貌 / organization 组织 / faction 阵营 / law 法律制度 / history 历史沿革 / economy 经济贸易 / magic 超凡体系(魔法科技) / culture 文化习俗信仰 / event 事件 / rule 通用规则 / item 物品 / concept 概念 / relationship 关系 / style 文风。不确定可不传' },
-      customType: { type: 'string', description: 'AI 自定义分类，如“地下据点”“宫廷传闻”“禁术代价”“边境黑市”等' },
-      functionType: { type: 'string', enum: ['keyword_trigger','constant_background','recursive_detail','voice_constraint','plot_hook','hidden_fact','conflict_fix'], description: '功能类型，不确定可不传' },
-      classificationReason: { type: 'string', description: '简短说明为什么这样分类。展示给用户作为可审计理由，不要写隐藏思维链。' },
-      templateSections: { type: 'array', items: { type: 'string' }, description: '自定义模板段落标题，如“入口伪装”“内部气味与陈设”“交易规则”“隐藏风险”。只给标题不等于写正文；正文必须放在 content。' },
-      fieldHints: {
-        type: 'object',
-        description: '字段设置建议，可覆盖矩阵推荐。允许 constant/selective/position/depth/order/probability/sticky/cooldown/delay 等。'
-      },
-      activationMode: { type: 'string', enum: ['always','keyword','selective','recursive','manual'], description: '高层触发判断。' },
-      insertionMode: { type: 'string', enum: ['lore','depth','example','author_note','outlet'], description: '高层插入位置判断。' },
-      recursionRole: { type: 'string', enum: ['none','entry','bridge','terminal','isolated','delayed'], description: '递归角色。' },
-      persistence: { type: 'string', enum: ['none','sticky','cooldown','delayed'], description: '时效判断。' },
-      randomness: { type: 'string', enum: ['none','rare','occasional','weighted'], description: '随机性判断。' },
-      priority: { type: 'string', enum: ['low','normal','high','critical'], description: '影响强度。' },
-      scope: { type: 'string', enum: ['global','character','scene','plot','style','safety'], description: '作用范围。' },
-      matchStrictness: { type: 'string', enum: ['loose','normal','strict','exact'], description: '匹配严格度。' },
-      reason: { type: 'string', description: '设置判断理由，展示给用户。' },
-      relatedEntries: { type: 'array', items: { type: 'object', properties: { name: { type: 'string', description: '关联词条名称（正文中提到的具体地点/建筑/组织/人物/物品）' }, type: { type: 'string', description: '建议类型：location/profession/organization/character/item/law 等' }, note: { type: 'string', description: '为什么值得单独建条（一句话）' } }, required: ['name'] }, description: '关联词条：正文涉及的具体地点/建筑/部门/人物，若值得单独建条则列出。工具会检查是否已有同名条目，没有的会提示用户考虑创建。' },
-      content: { type: 'string', description: '完整可写入的世界书正文草稿——它是注入给扮演 AI 的设定片段，不是给用户看的文章：直接陈述设定事实、信息密度高、按段落组织；篇幅按复杂度：小条目 80–300 字，主要人物/组织/规则等大卡可 500 字以上，完整优先。严禁只给框架/段落标题/“需要写成…”等指令占位；缺失段落会自动补全。' },
-      key: { type: 'array', items: { type: 'string' }, description: '触发关键词：书里会出现的人名/地名/物品/概念等具体词，2–6 个，避免“他”“王城”等过泛词；不传则按标题/类型推断' },
-      constant: { type: 'boolean', description: '强制常驻设置（常驻用于始终生效的规则/口吻）；不传则按矩阵推荐' }
-    },
-    required: ['userRequest', 'content']
-  };
-}
-
-// ===== 检测文本是否包含工具调用 =====
-function hasToolCall(text) {
-  if (!text) return false;
-  if (/<tool_call>/.test(text)) return true;
-  if (/<tool_use>/.test(text)) return true;
-  if (/<function=/.test(text)) return true;
-  return false;
-}
-
-// ===== 解析文本格式工具调用 =====
-function parseTextToolCalls(text) {
-  if (!text) return [];
-  const results = [];
-  let m;
-
-  // 1. <tool_use>{"name":"xxx","arguments":{...}}</tool_use>
-  const toolUseRe = /<tool_use>\s*(\{[\s\S]*?\})\s*<\/tool_use>/g;
-  while ((m = toolUseRe.exec(text)) !== null) {
-    try {
-      const obj = JSON.parse(m[1]);
-      if (obj.name && TOOL_NAMES.includes(obj.name)) results.push({ name: obj.name, args: obj.arguments || {} });
-    } catch (e) {}
+dispatchTool = createToolExecutor({
+  handlers: {
+    search_entries: toolSearch,
+    get_entry: toolGet,
+    ...mutationToolHandlers,
+    get_writing_template: toolGetWritingTemplate,
+    update_writing_template: toolUpdateWritingTemplate,
+    ...smartDraftOrchestrator.handlers,
+    list_entries: toolList,
+    check_entries: () => toolCheckEntries(),
+    test_triggers: toolTestTriggers,
+    export_book: () => toolExportBook(),
+    web_search: webSearchTool,
+    cleanup_book: () => toolCleanupBook(),
+    find_duplicates: toolFindDuplicates,
+    undo_last: toolUndo,
+    ...bookToolHandlers
   }
-  if (results.length > 0) return results;
+});
 
-  // 2. <tool_call><function=xxx><parameter=xxx>yyy</parameter></function></tool_call>
-  const xmlRe = /<tool_call>[\s\S]*?<function=(\w+)>[\s\S]*?<parameter=[^>]*>([\s\S]*?)<\/parameter>[\s\S]*?<\/function>[\s\S]*?<\/tool_call>/g;
-  while ((m = xmlRe.exec(text)) !== null) {
-    try {
-      const name = m[1];
-      const raw = m[2].trim();
-      let args;
-      try { args = JSON.parse(raw); } catch { args = { query: raw }; }
-      if (typeof args !== 'object' || args === null) args = { query: raw };
-      results.push({ name, args });
-    } catch (e) {}
-  }
-  if (results.length > 0) return results;
-
-  // 2b. 单参数 <function=xxx><parameter=name>value</parameter></function> (无 tool_call 包裹)
-  const fnTagRe = /<function=(\w+)>([\s\S]*?)<\/function>/g;
-  while ((m = fnTagRe.exec(text)) !== null) {
-    const name = m[1];
-    if (!TOOL_NAMES.includes(name)) continue;
-    const body = m[2];
-    const args = {};
-    const paramRe = /<parameter=([^>]+)>([\s\S]*?)<\/parameter>/g;
-    let pm;
-    while ((pm = paramRe.exec(body)) !== null) {
-      const key = pm[1].trim();
-      let val = pm[2].trim();
-      if (/^-?\d+$/.test(val)) val = parseInt(val, 10);
-      else if (val === 'true') val = true;
-      else if (val === 'false') val = false;
-      else if (/^[\[{]/.test(val)) {
-        // 对象/数组参数保持结构化，避免被字符串化写脏数据
-        try {
-          const parsed = JSON.parse(val);
-          if (parsed !== null && typeof parsed === 'object') val = parsed;
-        } catch (e) {}
-      }
-      args[key] = val;
-    }
-    results.push({ name, args });
-  }
-  if (results.length > 0) return results;
-
-  // 3. {"name":"xxx","arguments":{...}} 独立 JSON（名单派生自 TOOL_NAME_PATTERN）
-  while ((m = TOOL_CALL_JSON_RE.exec(text)) !== null) {
-    try { results.push({ name: m[1], args: JSON.parse(m[2]) }); } catch (e) {}
-  }
-  if (results.length > 0) return results;
-
-  // 4. search_entries("xxx") 函数调用格式（名单派生自 TOOL_NAME_PATTERN）
-  while ((m = TOOL_FN_RE.exec(text)) !== null) {
-    try {
-      const args = JSON.parse('[' + m[2] + ']');
-      results.push({ name: m[1], args: typeof args[0] === 'object' ? args[0] : { query: String(args[0]) } });
-    } catch {
-      results.push({ name: m[1], args: { query: m[2].replace(/['"]/g, '').trim() } });
-    }
-  }
-  return results;
-}
-
-// ===== 清理消息中的工具调用标记 =====
-function stripToolCalls(text) {
-  if (!text) return text;
-  text = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
-  text = text.replace(/<tool_use>[\s\S]*?<\/tool_use>/g, '');
-  text = text.replace(/<function=\w+>[\s\S]*?<\/function>/g, '');
-  text = text.replace(TOOL_CALL_JSON_STRIP_RE, '');
-  text = text.replace(/\n{3,}/g, '\n\n').trim();
-  return text;
-}
-
-async function executeTool(name, args) {
-  console.log('[WBE] executeTool:', name, 'args keys:', Object.keys(args || {}).join(',')); // 不打印参数内容，避免敏感信息泄漏
-  switch (name) {
-    case 'search_entries': return toolSearch(args);
-    case 'get_entry': return toolGet(args);
-    case 'edit_entry': return toolEdit(args);
-    case 'add_entry': return toolAdd(args);
-    case 'add_entries': return toolAddMany(args || {});
-    case 'get_writing_template': return toolGetWritingTemplate(args || {});
-    case 'update_writing_template': return toolUpdateWritingTemplate(args || {});
-    case 'plan_smart_entry': return toolPlanSmartEntry(args || {});
-    case 'create_smart_entry': return toolCreateSmartEntry(args || {});
-    case 'delete_entry': return toolDelete(args);
-    case 'delete_entries': return toolDeleteMany(args || {});
-    case 'batch_edit': return toolBatchEdit(args);
-    case 'replace_text': return toolReplaceText(args || {});
-    case 'manage_keys': return toolManageKeys(args || {});
-    case 'move_entry': return toolMoveEntry(args || {});
-    case 'list_entries': return toolList(args || {});
-    case 'toggle_entry': return toolToggle(args);
-    case 'reorder_entry': return toolReorder(args);
-    case 'duplicate_entry': return toolDuplicate(args);
-    case 'merge_entries': return toolMergeEntries(args || {});
-    case 'split_entry': return toolSplitEntry(args || {});
-    case 'check_entries': return toolCheckEntries();
-    case 'test_triggers': return toolTestTriggers(args || {});
-    case 'export_book': return toolExportBook();
-    case 'web_search': return await toolWebSearch(args || {});
-    case 'cleanup_book': return toolCleanupBook();
-    case 'find_duplicates': return toolFindDuplicates(args || {});
-    case 'undo_last': return toolUndo(args);
-    case 'get_book_info': return toolBookInfo();
-    case 'list_books': return await toolListBooks();
-    case 'switch_book': return await toolSwitchBook(args || {});
-    case 'create_book': return await toolCreateBook(args || {});
-    case 'rename_book': return await toolRenameBook(args || {});
-    case 'delete_book': return await toolDeleteBook(args || {});
-    default: return { summary: '未知工具', detail: 'Unknown tool: ' + name };
-  }
-}
 
 // 统一取全部条目
 function getAllEntries() {
@@ -2349,237 +1182,12 @@ function getAllEntries() {
   return wb && wb.entries ? Object.values(wb.entries) : (Array.isArray(entries) ? entries : []);
 }
 
-function toolSearch({ query, filter, type, includeContent }) {
-  let list = getAllEntries();
-  if (filter === 'constant') list = list.filter(e => e.constant && !e.disable);
-  else if (filter === 'keyword') list = list.filter(e => !e.constant && !e.disable);
-  else if (filter === 'disabled') list = list.filter(e => e.disable);
-  if (type) {
-    const t = String(type).toLowerCase();
-    list = list.filter(e => {
-      const wbe = (e.extensions && e.extensions.wbe) || {};
-      return wbe.semanticType === t || String(wbe.customType || '').toLowerCase().includes(t);
-    });
-  }
-  if (query) {
-    const q = query.toLowerCase();
-    list = list.filter(e =>
-      (e.comment||'').toLowerCase().includes(q) ||
-      (e.key||[]).some(k => k.toLowerCase().includes(q)) ||
-      (e.content||'').toLowerCase().includes(q)
-    );
-  }
-  const summary = '找到 ' + list.length + ' 条';
-  if (includeContent) {
-    const shown = list.slice(0, 8);
-    let detail = shown.map(e => {
-      const flag = e.disable ? '[禁]' : (e.constant ? '[常驻]' : '');
-      return '#' + e.uid + ' ' + flag + ' ' + (e.comment || '(无标题)') +
-        (Array.isArray(e.key) && e.key.length ? ' 关键词:' + e.key.join('/') : '') +
-        '\n' + String(e.content || '');
-    }).join('\n\n');
-    if (list.length > shown.length) detail += '\n\n... 还有 ' + (list.length - shown.length) + ' 条未显示，可缩小关键词后再次搜索';
-    return { summary, detail: detail || '(无条目)' };
-  }
-  const shown = list.slice(0, 20);
-  let detail = shown.map(e => '#' + e.uid + ' ' + (e.comment||'')).join('\n');
-  if (list.length > shown.length) detail += '\n... 还有 ' + (list.length - shown.length) + ' 条未显示，可缩小关键词或用 list_entries 查看';
-  return { summary, detail };
+function toolSearch(args) {
+  return searchEntries(getAllEntries(), args || {});
 }
 
-function toolGet({ uid }) {
-  const e = getAllEntries().find(e => e.uid === uid);
-  if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  return { summary: '#' + uid + ' ' + (e.comment||''), detail: JSON.stringify(e, null, 2) };
-}
-
-// 条目字段白名单（与 state.js createEntry 的字段一致）：AI 只能写这些字段，防止任意字段污染数据结构
-const ENTRY_FIELD_TYPES = {
-  key: 'array', keysecondary: 'array', triggers: 'array',
-  comment: 'string', content: 'string', group: 'string', role: 'string',
-  automationId: 'string', outletName: 'string',
-  constant: 'boolean', selective: 'boolean', addMemo: 'boolean', groupOverride: 'boolean',
-  useProbability: 'boolean', vectorized: 'boolean', excludeRecursion: 'boolean',
-  preventRecursion: 'boolean', delayUntilRecursion: 'boolean', ignoreBudget: 'boolean',
-  matchPersonaDescription: 'boolean', matchCharacterDescription: 'boolean',
-  matchCharacterPersonality: 'boolean', matchCharacterDepthPrompt: 'boolean',
-  matchScenario: 'boolean', matchCreatorNotes: 'boolean', disable: 'boolean',
-  selectiveLogic: 'number', order: 'number', position: 'number', groupWeight: 'number',
-  sticky: 'number', cooldown: 'number', delay: 'number', probability: 'number',
-  depth: 'number', displayIndex: 'number', scanDepth: 'number', caseSensitive: 'number',
-  matchWholeWords: 'number', useGroupScoring: 'number',
-  characterFilter: 'object'
-};
-
-// 白名单字段类型归一：白名单外字段返回 undefined（丢弃），合法字段按类型转换
-function normalizeEntryFieldValue(key, value) {
-  const type = ENTRY_FIELD_TYPES[key];
-  if (!type) return undefined;
-  if (value === undefined) return undefined;
-  if (value === null) {
-    // 仅允许本就是可空字段写入 null
-    return (key === 'role' || key === 'scanDepth' || key === 'caseSensitive' || key === 'matchWholeWords' || key === 'useGroupScoring') ? null : undefined;
-  }
-  switch (type) {
-    case 'boolean': return Boolean(value);
-    case 'number': { const n = Number(value); return Number.isFinite(n) ? n : 0; }
-    case 'string': return String(value);
-    case 'array': return Array.isArray(value) ? value.map(String) : (typeof value === 'string' ? value.split(/[,，]/).map(s => s.trim()).filter(Boolean) : []);
-    case 'object': return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
-    default: return undefined;
-  }
-}
-
-function toolEdit({ uid, fields }) {
-  const e = getAllEntries().find(e => e.uid === uid);
-  if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  snapshotForUndo('编辑 #' + uid);
-  const changed = [];
-  const ignored = [];
-  for (const [k, v] of Object.entries(fields || {})) {
-    if (k === 'uid') continue;
-    const nv = normalizeEntryFieldValue(k, v);
-    if (nv === undefined) { ignored.push(k); continue; }
-    e[k] = nv;
-    changed.push(k);
-  }
-  if (currentUid === uid) renderEditor(e);
-  renderSidebar();
-  scheduleSave();
-  const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
-  if (!changed.length) return { summary: '没有可修改的合法字段', detail: '传入字段均不在白名单内或为空：' + ignored.join(', ') };
-  const entryTitle = (getAllEntries().find(e => e.uid === uid) || {}).comment || '';
-  return { summary: '已修改 #' + uid + ' 的 ' + changed.join(','), detail: '修改字段: ' + changed.join(', ') + ignoreNote, changes: [{ type: 'edit', uid, comment: entryTitle, detail: changed.join(',') }] };
-}
-
-function applyEntryMeta(entry, semanticType, functionType, extra) {
-  if (!semanticType && !functionType && !extra) return;
-  entry.extensions = entry.extensions && typeof entry.extensions === 'object' ? entry.extensions : {};
-  entry.extensions.wbe = entry.extensions.wbe && typeof entry.extensions.wbe === 'object' ? entry.extensions.wbe : {};
-  if (semanticType) entry.extensions.wbe.semanticType = semanticType;
-  if (functionType) entry.extensions.wbe.functionType = functionType;
-  if (extra && typeof extra === 'object') Object.assign(entry.extensions.wbe, extra);
-}
-
-function applyEntryFields(entry, fields) {
-  for (const [k, v] of Object.entries(fields || {})) {
-    if (k === 'uid' || v === undefined) continue;
-    entry[k] = v;
-  }
-}
-
-function toolAdd({ comment, content, key, constant, semanticType, functionType }) {
-  snapshotForUndo('新增条目');
-  const uid = nextUid();
-  const entry = createEntry(uid);
-  if (comment) entry.comment = comment;
-  if (content) entry.content = content;
-  if (key) entry.key = key;
-  if (constant) entry.constant = constant;
-  applyEntryMeta(entry, semanticType, functionType);
-  worldBook.entries[uidKey(uid)] = entry;
-  entries.push(entry);
-  renderSidebar();
-  scheduleSave();
-  return { summary: '已创建 #' + uid, detail: '新条目 UID: ' + uid, changes: [{ type: 'add', uid, comment: comment || '', detail: (content || '').length + ' 字' }] };
-}
-
-function toolAddMany({ entries: items }) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return { summary: '未提供条目', detail: 'entries 需为非空数组' };
-  }
-  snapshotForUndo('批量新增 ' + items.length + ' 条');
-  const created = [];
-  for (const it of items) {
-    if (!it || typeof it !== 'object') continue;
-    const uid = nextUid();
-    const entry = createEntry(uid);
-    if (it.comment) entry.comment = it.comment;
-    if (it.content) entry.content = it.content;
-    if (it.key) entry.key = it.key;
-    if (it.constant) entry.constant = it.constant;
-    applyEntryMeta(entry, it.semanticType, it.functionType);
-    worldBook.entries[uidKey(uid)] = entry;
-    entries.push(entry);
-    created.push(uid);
-  }
-  renderSidebar();
-  scheduleSave();
-  const uidStr = created.length > 8 ? created.slice(0, 8).join(',') + '…' : created.join(',');
-  return {
-    summary: '已新增 ' + created.length + ' 条 (UID ' + uidStr + ')',
-    detail: '新条目 UID: ' + created.join(', '),
-    changes: created.slice(0, 12).map(uid => {
-      const e = entries.find(x => x.uid === uid);
-      return { type: 'add', uid, comment: (e && e.comment) || '' };
-    })
-  };
-}
-
-async function toolCreateSmartEntry(args) {
-  const draft = planWorldbookEntry(withWritingTemplate(args));
-  const completed = await maybeCompleteSmartContent(draft, args);
-  const r = commitSmartDraft(completed);
-  const related = checkRelatedEntries(args);
-  if (related) r.detail += related;
-  r.detail += checkNewEntry(r.uid, completed);
-  return r;
-}
-
-async function toolPlanSmartEntry(args) {
-  const draft = planWorldbookEntry(withWritingTemplate(args));
-  const completed = await maybeCompleteSmartContent(draft, args);
-  const record = createSmartDraftRecord(completed);
-  setActiveSmartDraft(smartDraftState, record);
-  renderSmartDraftModal(record);
-  const detail = smartDraftDetail(completed, null) + checkRelatedEntries(args);
-  // stop: true → 中断工具循环，等待用户在预览弹窗确认/取消，禁止 AI 继续创建
-  return { summary: '已生成智能条目预览「' + completed.title + '」，请在弹窗中确认', stop: true, detail: detail + '\n\n草稿 ID: ' + record.id + '\n请在弹窗中确认创建或取消，本回合已停止。' };
-}
-
-// 关联词条检查：正文涉及的实体若未建条，提示用户考虑创建（设定集联动）
-function checkRelatedEntries(args) {
-  const list = (Array.isArray(args && args.relatedEntries) ? args.relatedEntries : [])
-    .filter(r => r && String(r.name || '').trim())
-    .slice(0, 8);
-  if (!list.length) return '';
-  const existing = getAllEntries();
-  const existingNames = new Set(existing.map(e => String(e.comment || '').trim()));
-  const missing = list.filter(r => !existingNames.has(String(r.name).trim()));
-  if (!missing.length) return '\n关联词条：正文涉及 ' + list.length + ' 个实体均已有条目，无需新建。';
-  return '\n关联词条建议（现有条目中未找到，可考虑创建）：\n' + missing.map(r =>
-    '· ' + r.name + '（' + (r.type || '未知类型') + '）' + (r.note ? ' — ' + r.note : '')
-  ).join('\n');
-}
-
-// 检测正文是否不完整（指令性占位/段落缺失/过短），命中则让模型补全为完整正文
-const PLACEHOLDER_RE = /需要写成|需要.*(?:设定|补充|描写)|围绕[^。]{0,12}补充|可直接进入对话上下文/;
-
-async function maybeCompleteSmartContent(draft, args) {
-  const content = String(draft.content || '').trim();
-  const sections = Array.isArray(draft.templateSections) && draft.templateSections.length
-    ? draft.templateSections
-    : (TEMPLATES[draft.semanticType] || null);
-  const covered = sections ? sections.filter(s => content.includes(s)).length : 0;
-  const incomplete =
-    PLACEHOLDER_RE.test(content) ||
-    content.length < 30 ||
-    (sections && covered < Math.min(3, sections.length));
-  if (!incomplete) return draft;
-  try {
-    const text = await fetchCompletion([
-      { role: 'system', content: '你是世界书设定写手。世界书条目应当像设定集词条：结构完整、信息分层、可考据、中立客观。正文必须覆盖四要素：人（职业/岗位/关键人物）、地（至少 2 个具体地点）、数（价格/时间/数量/比例）、则（流程/规则/代价），缺少要素是缺陷必须补全。人物/职业相关条目必须写详细外观：上衣款式材质颜色、下装、鞋、外搭、配饰、体貌特征，全部是旁观者可见的细节，禁止“穿着得体”等空泛词。篇幅按设定复杂度弹性——小条目 80–300 字，大卡可 500–1500 字甚至更长。根据条目主题和段落模板，把正文补全为可直接使用的完整设定：每个段落一行「段落名：内容」，内容要具体、有细节、可触发；已经写好的段落保留原文，只补缺失部分。严禁输出“需要写成…”“围绕…补充”等指令性文字，严禁空段落。' },
-      { role: 'user', content: '条目主题：' + (draft.title || '') +
-        '\n段落模板：' + (sections ? sections.join('、') : '（按内容自然分段）') +
-        '\n现有内容：\n' + (content || '（无）') }
-    ]);
-    if (text && text.length > content.length * 0.6) {
-      draft.content = text;
-    }
-  } catch (e) {
-    console.warn('[WBE] 正文补全失败，保留原草稿:', e.message);
-  }
-  return draft;
+function toolGet(args) {
+  return getEntry(getAllEntries(), args || {});
 }
 
 function toolGetWritingTemplate(args) {
@@ -2600,61 +1208,6 @@ function toolUpdateWritingTemplate(args) {
   return { summary, detail: formatWritingTemplateForTool(updated, {}) };
 }
 
-function withWritingTemplate(args) {
-  const input = args || {};
-  const template = loadWritingTemplate(localStorage, currentBookId);
-  return {
-    ...input,
-    entries: getAllEntries(),
-    writingTemplate: input.writingTemplate || selectWritingTemplate(template, input)
-  };
-}
-
-function commitSmartDraft(draft) {
-  snapshotForUndo('智能新增条目');
-  const uid = nextUid();
-  const entry = createEntry(uid);
-  applyDraftToEntry(entry, draft);
-  worldBook.entries[uidKey(uid)] = entry;
-  entries.push(entry);
-  renderSidebar();
-  scheduleSave();
-  return { summary: '已智能创建 #' + uid + '「' + draft.title + '」', detail: smartDraftDetail(draft, uid), changes: [{ type: 'add', uid, comment: draft.title || '', detail: '智能创建' }], uid };
-}
-
-// 创建后体检联动：新条目自身风险 + 与全书的冲突/共享提示
-function checkNewEntry(uid, draft) {
-  const lines = [];
-  for (const c of (draft.checks || [])) {
-    if (c.level === 'warning' || c.level === 'danger') lines.push('[' + c.level + '] ' + c.message);
-  }
-  const report = toolCheckEntries();
-  for (const l of String(report.detail || '').split('\n')) {
-    if (l.includes('#' + uid)) lines.push(l);
-  }
-  if (!lines.length) return '\n新条目体检：未发现风险。';
-  return '\n新条目体检：\n' + lines.join('\n');
-}
-
-function smartDraftDetail(draft, uid) {
-  const checkText = draft.checks.map(c => '[' + c.level + '] ' + c.message).join('\n');
-  const fields = draft.fields || {};
-  return [
-    uid != null ? 'UID: ' + uid : 'UID: (待创建)',
-    '标题: ' + draft.title,
-    '语义类型: ' + draft.semanticType,
-    '自定义分类: ' + (draft.customType || '(无)'),
-    '功能类型: ' + draft.functionType,
-    '分类理由: ' + (draft.classificationReason || '按请求与默认规则判断'),
-    '设置判断: ' + formatDecision(draft.decision),
-    '模板段落: ' + (draft.templateSections.length ? draft.templateSections.join('、') : '内置 ' + draft.semanticType + ' 模板'),
-    '设置: constant=' + fields.constant + ', position=' + fields.position + ', depth=' + fields.depth + ', order=' + fields.order,
-    '关键词: ' + ((fields.key && fields.key.length) ? fields.key.join('、') : '(无)'),
-    '检查:\n' + checkText,
-    '正文:\n' + draft.content
-  ].join('\n');
-}
-
 function renderSmartDraftModal(record) {
   const box = $('smartDraftPreview');
   const modal = $('smartDraftModal');
@@ -2673,7 +1226,7 @@ function renderSmartDraftModal(record) {
 function commitActiveSmartDraft() {
   const record = takeActiveSmartDraft(smartDraftState);
   if (!record) { import('./utils.js').then(m => m.showToast('没有可提交的草稿', 'error')); return; }
-  const result = commitSmartDraft(record.draft);
+  const result = smartDraftOrchestrator.commitDraft(record.draft);
   const modal = $('smartDraftModal');
   if (modal) modal.classList.remove('open');
   appendChatMessage('tool', result.summary);
@@ -2687,478 +1240,24 @@ function discardActiveSmartDraft() {
   import('./utils.js').then(m => m.showToast('已取消智能条目草稿', 'success'));
 }
 
-function toolDelete({ uid }) {
-  if (!worldBook.entries[uidKey(uid)]) {
-    return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  }
-  snapshotForUndo('删除 #' + uid);
-  delete worldBook.entries[uidKey(uid)];
-  const newEntries = entries.filter(e => e.uid !== uid);
-  setEntries(newEntries);
-  if (currentUid === uid) {
-    import('./state.js').then(m => m.setCurrentUid(null));
-    renderEditorEmpty();
-  }
-  renderSidebar();
-  scheduleSave();
-  return { summary: '已删除 #' + uid, detail: '已删除 UID ' + uid, changes: [{ type: 'delete', uid, comment: title }] };
-}
-
-// 共用条目筛选：constant / disable / uid_range / query
-function applyEntryFilter(list, filter) {
-  if (!filter) return list;
-  if (filter.constant !== undefined) list = list.filter(e => e.constant === filter.constant);
-  if (filter.disable !== undefined) list = list.filter(e => e.disable === filter.disable);
-  if (filter.uid_range) {
-    const [min, max] = filter.uid_range;
-    list = list.filter(e => e.uid >= min && e.uid <= max);
-  }
-  if (filter.query) {
-    const q = String(filter.query).toLowerCase();
-    list = list.filter(e =>
-      (e.comment||'').toLowerCase().includes(q) ||
-      (e.key||[]).some(k => k.toLowerCase().includes(q)) ||
-      (e.content||'').toLowerCase().includes(q)
-    );
-  }
-  return list;
-}
-
-function toolDeleteMany({ uids, filter }) {
-  let targets;
-  if (Array.isArray(uids) && uids.length > 0) {
-    const set = new Set(uids);
-    targets = getAllEntries().filter(e => set.has(e.uid));
-  } else if (filter) {
-    targets = applyEntryFilter(getAllEntries(), filter);
-  } else {
-    return { summary: '未提供条件', detail: '需提供 uids 数组或 filter 条件' };
-  }
-  if (targets.length === 0) return { summary: '无匹配条目', detail: '没有匹配的条目，未删除' };
-  snapshotForUndo('批量删除 ' + targets.length + ' 条');
-  const delUids = targets.map(e => e.uid);
-  const delSet = new Set(delUids);
-  for (const e of targets) delete worldBook.entries[uidKey(e.uid)];
-  setEntries(entries.filter(e => !delSet.has(e.uid)));
-  if (currentUid !== null && delSet.has(currentUid)) {
-    import('./state.js').then(m => m.setCurrentUid(null));
-    renderEditorEmpty();
-  }
-  renderSidebar();
-  scheduleSave();
-  const dStr = delUids.length > 8 ? delUids.slice(0, 8).join(',') + '…' : delUids.join(',');
-  return {
-    summary: '已删除 ' + delUids.length + ' 条 (UID ' + dStr + ')',
-    detail: '已删除 UID: ' + delUids.join(', '),
-    changes: targets.slice(0, 12).map(e => ({ type: 'delete', uid: e.uid, comment: e.comment || '' }))
-  };
-}
-
-function toolBatchEdit({ filter, fields }) {
-  let list = applyEntryFilter(getAllEntries(), filter);
-  if (list.length === 0) return { summary: '无匹配条目', detail: '筛选条件未匹配到任何条目，未做修改' };
-  snapshotForUndo('批量修改 ' + list.length + ' 条');
-  const changed = [];
-  const ignored = [];
-  for (const [k, v] of Object.entries(fields || {})) {
-    if (k === 'uid') continue;
-    const nv = normalizeEntryFieldValue(k, v);
-    if (nv === undefined) { ignored.push(k); continue; }
-    changed.push(k);
-    for (const e of list) e[k] = nv;
-  }
-  renderSidebar();
-  if (currentUid) {
-    const current = entries.find(e => e.uid === currentUid);
-    if (current) renderEditor(current);
-  }
-  scheduleSave();
-  const ignoreNote = ignored.length ? '；忽略非法/未知字段: ' + ignored.join(', ') : '';
-  return {
-    summary: '已批量修改 ' + list.length + ' 条',
-    detail: '修改字段: ' + changed.join(', ') + '，影响 ' + list.length + ' 条' + ignoreNote,
-    changes: list.slice(0, 12).map(e => ({ type: 'edit', uid: e.uid, comment: e.comment || '', detail: changed.join(',') }))
-  };
-}
-
-function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-
-// 查找替换：默认全书 content，可用 uid / filter 缩小，字面或正则
-function toolReplaceText({ find, replace, fields, uid, filter, regex, ignore_case }) {
-  if (find == null || find === '') return { summary: 'find 不能为空', detail: '需要提供要查找的文本' };
-  if (replace == null) replace = '';
-  const allow = ['content', 'comment', 'key'];
-  let cols = Array.isArray(fields) && fields.length ? fields.filter(f => allow.includes(f)) : ['content'];
-  if (!cols.length) cols = ['content'];
-
-  let re;
-  try {
-    const flags = 'g' + (ignore_case ? 'i' : '');
-    re = new RegExp(regex ? find : escapeRegExp(find), flags);
-  } catch (e) { return { summary: '正则无效', detail: e.message }; }
-
-  // 选定目标条目
-  let targets;
-  if (uid != null) {
-    const e = getAllEntries().find(x => x.uid === uid);
-    if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-    targets = [e];
-  } else {
-    targets = applyEntryFilter(getAllEntries(), filter);
-  }
-  if (!targets.length) return { summary: '无匹配条目', detail: '筛选条件未匹配到任何条目' };
-
-  const countIn = (str) => { const m = String(str).match(re); return m ? m.length : 0; };
-  const doRepl = (str) => regex ? str.replace(re, replace) : str.replace(re, () => replace);
-
-  let total = 0, affected = 0;
-  const pending = [];
-  for (const e of targets) {
-    let hit = 0;
-    for (const col of cols) {
-      if (col === 'key') {
-        const arr = Array.isArray(e.key) ? e.key : [];
-        for (const k of arr) hit += countIn(k);
-      } else if (typeof e[col] === 'string') {
-        hit += countIn(e[col]);
-      }
-    }
-    if (hit > 0) { pending.push(e); total += hit; affected++; }
-  }
-  if (total === 0) return { summary: '未找到「' + find + '」', detail: '在 ' + targets.length + ' 条目的 ' + cols.join('/') + ' 中没有匹配' };
-
-  snapshotForUndo('替换「' + find + '」→「' + replace + '」(' + affected + ' 条)');
-  for (const e of pending) {
-    for (const col of cols) {
-      if (col === 'key') {
-        if (Array.isArray(e.key)) e.key = e.key.map(k => doRepl(k)).filter(k => k !== '');
-      } else if (typeof e[col] === 'string') {
-        e[col] = doRepl(e[col]);
-      }
-    }
-  }
-  if (currentUid != null && pending.some(e => e.uid === currentUid)) {
-    const cur = entries.find(e => e.uid === currentUid);
-    if (cur) renderEditor(cur);
-  }
-  renderSidebar();
-  scheduleSave();
-  return {
-    summary: '已替换 ' + total + ' 处，影响 ' + affected + ' 条',
-    detail: '在 ' + cols.join('/') + ' 把「' + find + '」替换为「' + replace + '」' + (regex ? '（正则）' : '') + '，共 ' + total + ' 处 / ' + affected + ' 个条目',
-    changes: pending.slice(0, 12).map(e => ({ type: 'edit', uid: e.uid, comment: e.comment || '', detail: '替换「' + find + '」' }))
-  };
-}
-
-// 增删某条目的关键词（主 key 或次 keysecondary）
-function toolManageKeys({ uid, add, remove, secondary }) {
-  const e = getAllEntries().find(x => x.uid === uid);
-  if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  const addArr = Array.isArray(add) ? add.map(s => String(s).trim()).filter(Boolean) : [];
-  const rmArr = Array.isArray(remove) ? remove.map(s => String(s).trim()).filter(Boolean) : [];
-  if (!addArr.length && !rmArr.length) return { summary: '无操作', detail: '需提供 add 或 remove 数组' };
-  const field = secondary ? 'keysecondary' : 'key';
-  const label = secondary ? '次要关键词' : '关键词';
-  snapshotForUndo('调整 #' + uid + ' 的' + label);
-  let arr = Array.isArray(e[field]) ? e[field].slice() : [];
-  let added = 0, removed = 0;
-  if (rmArr.length) {
-    const rmSet = new Set(rmArr);
-    const before = arr.length;
-    arr = arr.filter(k => !rmSet.has(k));
-    removed = before - arr.length;
-  }
-  for (const k of addArr) { if (!arr.includes(k)) { arr.push(k); added++; } }
-  e[field] = arr;
-  if (currentUid === uid) renderEditor(e);
-  renderSidebar();
-  scheduleSave();
-  return {
-    summary: '#' + uid + ' ' + label + ' +' + added + ' / -' + removed,
-    detail: '#' + uid + ' 当前' + label + '：' + (arr.length ? arr.join('、') : '(空)'),
-    changes: [{ type: 'edit', uid, comment: e.comment || '', detail: label + (added ? ' +' + added : '') + (removed ? ' -' + removed : '') }]
-  };
-}
-
-// 设置条目插入位置 position（与 reorder 的 order 数值互补）
-function toolMoveEntry({ uid, position, depth }) {
-  const e = getAllEntries().find(x => x.uid === uid);
-  if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  if (typeof position !== 'number') return { summary: 'position 须为数字', detail: '收到的 position: ' + position };
-  const names = { 0: '角色定义前', 1: '角色定义后', 2: '作者注释前', 3: '作者注释后', 4: '@深度' };
-  snapshotForUndo('移动位置 #' + uid);
-  e.position = position;
-  let extra = '';
-  if (position === 4 && typeof depth === 'number') { e.depth = depth; extra = '，深度 ' + depth; }
-  if (currentUid === uid) renderEditor(e);
-  renderSidebar();
-  scheduleSave();
-  const posName = names[position] || ('position=' + position);
-  return { summary: '#' + uid + ' 移到「' + posName + '」' + extra, detail: '#' + uid + ' position=' + position + '（' + posName + '）' + extra, changes: [{ type: 'edit', uid, comment: e.comment || '', detail: 'position=' + position }] };
-}
-
-function toolList({ filter, limit } = {}) {
-  let list = getAllEntries();
-  if (filter === 'constant') list = list.filter(e => e.constant && !e.disable);
-  else if (filter === 'keyword') list = list.filter(e => !e.constant && !e.disable);
-  else if (filter === 'disabled') list = list.filter(e => e.disable);
-  list = list.slice().sort((a, b) => a.uid - b.uid);
-  const lim = limit || 100;
-  const shown = list.slice(0, lim);
-  let detail = shown.map(e => {
-    const flag = e.disable ? '[禁]' : (e.constant ? '[常驻]' : '');
-    return '#' + e.uid + ' ' + flag + ' ' + (e.comment || '(无标题)');
-  }).join('\n');
-  if (list.length > shown.length) detail += '\n... 还有 ' + (list.length - shown.length) + ' 条未显示（可调大 limit）';
-  return { summary: '共 ' + list.length + ' 条', detail: detail || '(无条目)' };
-}
-
-function toolToggle({ uid, disable }) {
-  const e = getAllEntries().find(e => e.uid === uid);
-  if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  snapshotForUndo((e.disable ? '启用' : '禁用') + ' #' + uid);
-  e.disable = (disable === undefined || disable === null) ? !e.disable : !!disable;
-  if (currentUid === uid) renderEditor(e);
-  renderSidebar();
-  scheduleSave();
-  const state = e.disable ? '已禁用' : '已启用';
-  return { summary: '#' + uid + ' ' + state, detail: '#' + uid + ' (' + (e.comment||'') + ') ' + state, changes: [{ type: 'edit', uid, comment: e.comment || '', detail: state }] };
-}
-
-function toolReorder({ uid, order }) {
-  const e = getAllEntries().find(e => e.uid === uid);
-  if (!e) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  if (typeof order !== 'number') return { summary: 'order 须为数字', detail: '收到的 order: ' + order };
-  snapshotForUndo('调整顺序 #' + uid);
-  e.order = order;
-  if (currentUid === uid) renderEditor(e);
-  renderSidebar();
-  scheduleSave();
-  return { summary: '#' + uid + ' order=' + order, detail: '#' + uid + ' (' + (e.comment||'') + ') order 已设为 ' + order, changes: [{ type: 'edit', uid, comment: e.comment || '', detail: 'order=' + order }] };
-}
-
-function toolDuplicate({ uid }) {
-  const src = getAllEntries().find(e => e.uid === uid);
-  if (!src) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  snapshotForUndo('复制 #' + uid);
-  const newUid = nextUid();
-  const copy = JSON.parse(JSON.stringify(src));
-  copy.uid = newUid;
-  copy.comment = (src.comment || '') + ' (副本)';
-  worldBook.entries[uidKey(newUid)] = copy;
-  entries.push(copy);
-  renderSidebar();
-  scheduleSave();
-  return { summary: '已复制 #' + uid + ' → #' + newUid, detail: '新副本 UID: ' + newUid + '（标题: ' + copy.comment + '）', changes: [{ type: 'add', uid: newUid, comment: copy.comment || '', detail: '复制自 #' + uid }] };
-}
-
-// ===== 合并条目 =====
-function toolMergeEntries({ uids, keep }) {
-  const list = getAllEntries();
-  const targets = (Array.isArray(uids) ? uids : []).map(u => list.find(e => e.uid === u)).filter(Boolean);
-  if (targets.length < 2) return { summary: '合并失败', detail: '需要至少 2 个存在的 UID，传入: ' + JSON.stringify(uids) };
-  const keepTarget = (keep != null && targets.some(t => t.uid === keep)) ? targets.find(t => t.uid === keep) : targets[0];
-  const rest = targets.filter(t => t !== keepTarget);
-  snapshotForUndo('合并条目 ' + targets.map(t => '#' + t.uid).join('+'));
-  // 正文拼接（去重段落标题），关键词并集，字段取 keep 的
-  const contentParts = [];
-  for (const t of targets) {
-    const c = String(t.content || '').trim();
-    if (c && !contentParts.includes(c)) contentParts.push(c);
-  }
-  keepTarget.content = contentParts.join('\n\n');
-  const keySet = new Set((Array.isArray(keepTarget.key) ? keepTarget.key : []).map(k => String(k)));
-  for (const t of rest) {
-    for (const k of (Array.isArray(t.key) ? t.key : [])) keySet.add(String(k));
-  }
-  keepTarget.key = [...keySet];
-  keepTarget.comment = keepTarget.comment || (rest[0] && rest[0].comment) || '合并条目';
-  for (const t of rest) {
-    delete worldBook.entries[uidKey(t.uid)];
-    const idx = entries.indexOf(t);
-    if (idx >= 0) entries.splice(idx, 1);
-  }
-  renderSidebar();
-  scheduleSave();
-  return {
-    summary: '已合并 ' + targets.length + ' 条 → #' + keepTarget.uid + '「' + keepTarget.comment + '」',
-    detail: '保留 #' + keepTarget.uid + '，删除 ' + rest.map(t => '#' + t.uid).join('、') + '；关键词合并为: ' + (keepTarget.key.length ? keepTarget.key.join('、') : '(无)') + '。可 undo_last 回退。',
-    changes: [
-      { type: 'merge', uid: keepTarget.uid, comment: keepTarget.comment || '', detail: '合并 ' + targets.length + ' 条' },
-      ...rest.slice(0, 11).map(t => ({ type: 'delete', uid: t.uid, comment: t.comment || '' }))
-    ]
-  };
-}
-
-// ===== 拆分条目 =====
-function toolSplitEntry({ uid, parts }) {
-  const src = getAllEntries().find(e => e.uid === uid);
-  if (!src) return { summary: '未找到 #' + uid, detail: 'UID ' + uid + ' 不存在' };
-  const list = Array.isArray(parts) ? parts.filter(p => p && String(p.comment || '').trim() && String(p.content || '').trim()) : [];
-  if (list.length < 2) return { summary: '拆分失败', detail: 'parts 至少需要 2 个含标题和正文的条目' };
-  snapshotForUndo('拆分 #' + uid);
-  delete worldBook.entries[uidKey(uid)];
-  const idx = entries.indexOf(src);
-  if (idx >= 0) entries.splice(idx, 1);
-  const created = [];
-  for (const p of list) {
-    const newUid = nextUid();
-    const copy = JSON.parse(JSON.stringify(src));
-    copy.uid = newUid;
-    copy.comment = String(p.comment).trim();
-    copy.content = String(p.content).trim();
-    copy.key = Array.isArray(p.key) ? p.key.map(k => String(k)) : (Array.isArray(src.key) ? [...src.key] : []);
-    worldBook.entries[uidKey(newUid)] = copy;
-    entries.push(copy);
-    created.push(newUid);
-  }
-  renderSidebar();
-  scheduleSave();
-  return {
-    summary: '已拆分 #' + uid + ' → ' + created.length + ' 条',
-    detail: '新条目 UID: ' + created.join('、') + '（可 undo_last 回退）',
-    changes: [
-      { type: 'split', uid, comment: src.comment || '', detail: '拆为 ' + created.length + ' 条' },
-      ...created.slice(0, 12).map(uid => ({ type: 'add', uid, comment: (entries.find(x => x.uid === uid) || {}).comment || '' }))
-    ]
-  };
+function toolList(args = {}) {
+  return listEntries(getAllEntries(), args);
 }
 
 // ===== 查重：按标题相同/子串、关键词重叠、正文开头相同找疑似重复条目 =====
-function toolFindDuplicates({ limit } = {}) {
-  const list = getAllEntries();
-  const norm = s => String(s || '').replace(/[\s，。、,.!！?？:：;；"'“”‘’()[\]【】\-—_]/g, '').toLowerCase();
-  const pairs = [];
-  const seen = new Set();
-  const cap = limit && limit > 0 ? Math.min(limit, 20) : 10;
-  for (let i = 0; i < list.length; i++) {
-    for (let j = i + 1; j < list.length; j++) {
-      const a = list[i], b = list[j];
-      const key = a.uid < b.uid ? a.uid + '-' + b.uid : b.uid + '-' + a.uid;
-      if (seen.has(key)) continue;
-      const na = norm(a.comment), nb = norm(b.comment);
-      let reason = '', score = 0;
-      if (na && na === nb) { reason = '标题完全相同'; score = 1; }
-      else if (na && nb && (na.includes(nb) || nb.includes(na))) { reason = '标题互为包含'; score = 0.8; }
-      if (score < 1) {
-        const ka = new Set((a.key || []).map(norm).filter(Boolean));
-        const overlap = (b.key || []).map(norm).filter(k => k && ka.has(k)).length;
-        if (overlap >= 2) { reason = '关键词重叠 ' + overlap + ' 个'; score = Math.max(score, 0.7); }
-        const ca = norm(a.content).slice(0, 80), cb = norm(b.content).slice(0, 80);
-        if (ca && ca === cb) { reason = '正文开头相同'; score = Math.max(score, 0.8); }
-      }
-      if (score > 0) {
-        seen.add(key);
-        pairs.push({ uidA: a.uid, uidB: b.uid, commentA: a.comment || '(无题)', commentB: b.comment || '(无题)', reason, score });
-      }
-    }
-  }
-  pairs.sort((x, y) => y.score - x.score);
-  const shown = pairs.slice(0, cap);
-  return {
-    summary: '发现 ' + pairs.length + ' 组疑似重复',
-    detail: (shown.length
-      ? shown.map(p => '#' + p.uidA + '「' + p.commentA + '」 ↔ #' + p.uidB + '「' + p.commentB + '」 — ' + p.reason).join('\n')
-      : '未发现重复。可配合 merge_entries 合并确认重复的条目。') + (pairs.length > shown.length ? '\n…还有 ' + (pairs.length - shown.length) + ' 组未列出' : '')
-  };
+function toolFindDuplicates(args = {}) {
+  return findDuplicates(getAllEntries(), args);
 }
 
 // ===== 全书体检 =====
 // ===== 全书体检 =====
-// 内容相似度：字符 bigram Jaccard，用于区分“真冲突”与“互补共享”
-function contentSimilarity(a, b) {
-  const grams = s => {
-    const t = String(s || '').replace(/\s+/g, '');
-    if (t.length < 2) return new Set([t]);
-    const set = new Set();
-    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
-    return set;
-  };
-  const A = grams(a), B = grams(b);
-  if (!A.size || !B.size) return 0;
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  return inter / (A.size + B.size - inter);
-}
-
 function toolCheckEntries() {
-  const list = getAllEntries();
-  const issues = [];
-  const byKey = new Map();
-  const byTitle = new Map();
-  for (const e of list) {
-    const title = String(e.comment || '').trim();
-    if (title) {
-      const t = title.toLowerCase();
-      if (!byTitle.has(t)) byTitle.set(t, []);
-      byTitle.get(t).push(e.uid);
-    }
-    for (const k of (Array.isArray(e.key) ? e.key : [])) {
-      const key = String(k).toLowerCase().trim();
-      if (!key) continue;
-      if (!byKey.has(key)) byKey.set(key, []);
-      byKey.get(key).push(e.uid);
-    }
-  }
-  for (const e of list) {
-    const tag = '#' + e.uid + '「' + (e.comment || '(无标题)') + '」';
-    const active = !e.disable;
-    const keys = (Array.isArray(e.key) ? e.key : []).map(k => String(k).trim()).filter(Boolean);
-    const wbe = (e.extensions && e.extensions.wbe) || {};
-    if (!String(e.content || '').trim()) issues.push('[空正文] ' + tag + (wbe.semanticType ? '（类型: ' + wbe.semanticType + '）' : ''));
-    if (active && !e.constant && keys.length === 0) issues.push('[永不触发] ' + tag + ' 无关键词且非常驻，永远不会被注入');
-    for (const k of keys) {
-      if (k.length <= 1) issues.push('[关键词过短] ' + tag + ' 关键词「' + k + '」只有 ' + k.length + ' 个字，容易误触发');
-      const holders = (byKey.get(k.toLowerCase()) || []).filter(uid => uid !== e.uid && !list.find(x => x.uid === uid)?.disable);
-      for (const h of holders) {
-        const other = list.find(x => x.uid === h);
-        const sim = contentSimilarity(e.content, other && other.content);
-        if (sim > 0.45) {
-          issues.push('[关键词冲突] ' + tag + ' 与 #' + h + ' 共用关键词「' + k + '」且内容高度相似(' + Math.round(sim * 100) + '%)，建议合并或调整其中一条');
-        } else {
-          issues.push('[关键词共享] ' + tag + ' 与 #' + h + ' 共用关键词「' + k + '」（内容不重叠，可能是有意互补——如人物与其装备共享人名，属合理设计，可保留）');
-        }
-      }
-    }
-    const dupTitles = (byTitle.get(String(e.comment || '').toLowerCase()) || []).filter(uid => uid !== e.uid);
-    if (dupTitles.length) issues.push('[标题重复] ' + tag + ' 与 ' + dupTitles.map(h => '#' + h).join('、') + ' 标题相同');
-  }
-  const byLevel = {};
-  for (const line of issues) {
-    const level = line.slice(1, line.indexOf(']'));
-    byLevel[level] = (byLevel[level] || 0) + 1;
-  }
-  if (!issues.length) return { summary: '体检通过：' + list.length + ' 条全部健康', detail: '未发现问题。' };
-  const levelText = Object.entries(byLevel).map(([l, n]) => l + '×' + n).join('，');
-  return { summary: '发现 ' + issues.length + ' 个问题（' + levelText + '）', detail: issues.join('\n') };
+  return checkEntries(getAllEntries());
 }
 
 // ===== 触发预演 =====
-function toolTestTriggers({ text }) {
-  const src = String(text || '');
-  if (!src) return { summary: '缺少测试文本', detail: '请提供要测试的场景文本' };
-  const lower = src.toLowerCase();
-  const list = getAllEntries().filter(e => !e.disable);
-  const hits = [];
-  for (const e of list) {
-    if (e.constant) { hits.push({ e, why: '常驻' }); continue; }
-    const matched = (Array.isArray(e.key) ? e.key : []).filter(k => {
-      const kk = String(k).trim().toLowerCase();
-      return kk && lower.includes(kk);
-    });
-    if (matched.length) hits.push({ e, why: '关键词: ' + matched.join('/') });
-  }
-  // 按 SillyTavern 注入顺序：depth 升序，order 升序
-  hits.sort((a, b) => (a.e.depth || 0) - (b.e.depth || 0) || (a.e.order || 0) - (b.e.order || 0));
-  if (!hits.length) return { summary: '无条目触发', detail: '这段文本没有命中任何关键词，也没有常驻条目。' };
-  const lines = hits.map((h, i) =>
-    (i + 1) + '. #' + h.e.uid + ' ' + (h.e.comment || '(无标题)') + ' [' + h.why + '] (depth=' + (h.e.depth || 0) + ', order=' + (h.e.order || 0) + ')'
-  );
-  const constantCount = hits.filter(h => h.e.constant).length;
-  return {
-    summary: '命中 ' + hits.length + ' 条（常驻 ' + constantCount + '，关键词 ' + (hits.length - constantCount) + '）',
-    detail: '注入顺序（先 depth 后 order）:\n' + lines.join('\n')
-  };
+function toolTestTriggers(args = {}) {
+  return testTriggers(getAllEntries(), args);
 }
 
 // ===== 导出下载 =====
@@ -3175,29 +1274,6 @@ function toolExportBook() {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
   return { summary: '已导出「' + name + '」(' + getAllEntries().length + ' 条)', detail: 'JSON 文件已开始下载，可直接导入 SillyTavern。' };
-}
-
-// ===== 联网搜索 =====
-async function toolWebSearch({ query, limit }) {
-  const q = String(query || '').trim();
-  if (!q) return { summary: '缺少搜索词', detail: '请提供要搜索的内容' };
-  const { authHeaders } = await import('./auth.js');
-  const resp = await fetch('/api/proxy/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ q })
-  });
-  if (resp.status === 503) {
-    return { summary: '搜索服务被限流', detail: '搜索服务暂时被限流（反爬），请稍后重试或换关键词。你可以先用现有知识创作，稍后再补查。' };
-  }
-  if (!resp.ok) throw new Error('搜索接口 HTTP ' + resp.status);
-  const data = await resp.json();
-  const list = (data.results || []).slice(0, Math.max(1, Math.min(parseInt(limit, 10) || 3, 5)));
-  if (!list.length) return { summary: '搜索无结果', detail: '「' + q + '」没有找到结果，可换关键词重试' };
-  const lines = list.map((r, i) =>
-    (i + 1) + '. ' + r.title + '\n   ' + r.url + '\n   ' + (r.snippet || '(无摘要)')
-  );
-  return { summary: '搜索到 ' + list.length + ' 条（' + q + '）', detail: lines.join('\n\n') };
 }
 
 function toolUndo(args) {
@@ -3228,131 +1304,35 @@ function currentBookName() {
   return (el && el.textContent) || '未命名';
 }
 
-function toolBookInfo() {
-  const name = currentBookName();
-  const list = getAllEntries();
-  const constant = list.filter(e => e.constant && !e.disable).length;
-  const keyword = list.filter(e => !e.constant && !e.disable).length;
-  const disabled = list.filter(e => e.disable).length;
-  const byType = {};
-  for (const e of list) {
-    const wbe = (e.extensions && e.extensions.wbe) || {};
-    const t = wbe.semanticType || (e.disable ? 'disabled' : (e.constant ? '常驻(未分类)' : '未分类'));
-    byType[t] = (byType[t] || 0) + 1;
-  }
-  const typeLines = Object.entries(byType).sort((a, b) => b[1] - a[1])
-    .map(([t, n]) => t + ': ' + n).join('\n');
-  return {
-    summary: '当前「' + name + '」，' + list.length + ' 条（常驻 ' + constant + ' / 关键词 ' + keyword + ' / 禁用 ' + disabled + '）',
-    detail: '书名: ' + name + '\nID: ' + (currentBookId != null ? currentBookId : '未知') +
-      '\n条目数: ' + list.length +
-      '\n常驻: ' + constant + '，关键词触发: ' + keyword + '，禁用: ' + disabled +
-      '\n按语义类型分布:\n' + (typeLines || '(无)') +
-      '\n提示: 需要看某类条目全文时用 search_entries 的 type + includeContent 参数。'
-  };
+function cleanupDeletedBookLocalData(bookId) {
+  legacyAiDataMigration.cleanupBookLocalData(bookId);
 }
 
-async function toolListBooks() {
-  const books = await loadBookList();
-  if (!books.length) return { summary: '暂无世界书', detail: '数据库里没有世界书' };
-  const detail = books.map(b => {
-    const cur = b.id === currentBookId ? '  ← 当前' : '';
-    return '#' + b.id + ' ' + b.name + '（' + b.entry_count + ' 条）' + cur;
-  }).join('\n');
-  return { summary: '共 ' + books.length + ' 本世界书', detail };
-}
-
-async function toolSwitchBook({ id, name }) {
-  const books = await loadBookList();
-  let target = null;
-  if (id != null) target = books.find(b => b.id === id);
-  if (!target && name) {
-    const q = String(name).toLowerCase();
-    target = books.find(b => b.name.toLowerCase() === q) || books.find(b => b.name.toLowerCase().includes(q));
-  }
-  if (!target) return { summary: '未找到目标世界书', detail: '没有匹配 id=' + id + ' / name=' + name + ' 的世界书。可先用 list_books 查看。' };
-  if (target.id === currentBookId) return { summary: '已在「' + target.name + '」', detail: '当前已是该世界书，无需切换' };
-  abortActiveChat('switch'); // 切书即中断在途流式回复
-  await loadBook(target.id, renderSidebar, selectEntry, renderEditorEmpty);
-  return { summary: '已切换到「' + target.name + '」', detail: '已打开世界书 #' + target.id + '（' + target.name + '），现有 ' + entries.length + ' 条' };
-}
-
-async function toolCreateBook({ name }) {
-  const bookName = (name && String(name).trim()) || '新世界书';
-  const res = await createBook(bookName);
+async function handleDeletedCurrentBook({ remainingBooks }) {
   abortActiveChat('switch');
-  await loadBook(res.id, renderSidebar, selectEntry, renderEditorEmpty);
-  return { summary: '已创建并打开「' + bookName + '」', detail: '新世界书 #' + res.id + '（' + bookName + '）已创建并切换过去' };
-}
-
-async function toolRenameBook({ name, id }) {
-  const newName = name && String(name).trim();
-  if (!newName) return { summary: '缺少新名称', detail: '请提供 name 参数' };
-  const targetId = (id != null) ? id : currentBookId;
-  if (targetId == null) return { summary: '无目标世界书', detail: '当前没有打开的世界书，也未指定 id' };
-  try {
-    if (targetId === currentBookId) {
-      await renameBook(targetId, newName, worldBook);
-      const el = $('file-name');
-      if (el) el.textContent = newName;
-    } else {
-      const book = await apiRequest('GET', '/api/books/' + targetId);
-      await renameBook(targetId, newName, book.data);
-    }
-    return { summary: '已重命名为「' + newName + '」', detail: '世界书 #' + targetId + ' 已重命名为「' + newName + '」' };
-  } catch (e) {
-    return { summary: '重命名失败', detail: e.message };
-  }
-}
-
-async function toolDeleteBook({ id, name, confirm }) {
-  const books = await loadBookList();
-  let target = null;
-  if (id != null) target = books.find(b => b.id === id);
-  else if (name) {
-    const q = String(name).toLowerCase();
-    target = books.find(b => b.name.toLowerCase() === q) || books.find(b => b.name.toLowerCase().includes(q));
-  } else if (currentBookId != null) target = books.find(b => b.id === currentBookId);
-  if (!target) return { summary: '未找到目标世界书', detail: '没有匹配 id=' + id + ' / name=' + name + ' 的世界书。可先用 list_books 查看。' };
-  if (confirm !== true) {
-    return { summary: '需确认删除「' + target.name + '」', detail: '将永久删除世界书 #' + target.id + '（' + target.name + '），不可恢复。确认请再次调用 delete_book 并传 confirm:true。' };
-  }
-  const wasCurrent = target.id === currentBookId;
-  try { await deleteBook(target.id); }
-  catch (e) { return { summary: '删除失败', detail: e.message }; }
-
-  // 一并清理该书在 localStorage 的记忆/会话/活动会话键（含旧版单会话历史）
-  try {
-    localStorage.removeItem(memKey(target.id));
-    localStorage.removeItem(sessionsKey(target.id));
-    localStorage.removeItem(activeKey(target.id));
-    localStorage.removeItem('wbe-chat:' + target.id);
-  } catch (e) {
-    console.warn('[WBE] 清理已删世界书的本地数据失败:', target.id, e);
-  }
+  memory = emptyMemory();
+  logBookId = null;
+  sessions = [];
+  activeSessionId = null;
+  updateMemoryBadge();
 
   let tail = '';
-  if (wasCurrent) {
-    abortActiveChat('switch');
-    memory = emptyMemory();
-    logBookId = null;
-    sessions = [];
-    activeSessionId = null;
-    updateMemoryBadge();
-    const rest = await loadBookList();
-    if (rest.length) {
-      await loadBook(rest[0].id, renderSidebar, selectEntry, renderEditorEmpty);
-      tail = '，已切换到「' + rest[0].name + '」';
-    } else {
-      const st = await import('./state.js');
-      st.setCurrentBookId(null); st.setCurrentUid(null);
-      setEntries([]); renderSidebar(); renderEditorEmpty();
-      const el = $('file-name'); if (el) el.textContent = '未命名';
-      chatMessages.length = 0;
-      renderChatHistory();
-      tail = '，已无其它世界书';
-    }
-    ensureMemoryLoaded(); // 加载新当前书的记忆与会话（logBookId 已置空会触发重载）
+  if (remainingBooks.length) {
+    await loadBook(remainingBooks[0].id, renderSidebar, selectEntry, renderEditorEmpty);
+    tail = '，已切换到「' + remainingBooks[0].name + '」';
+  } else {
+    const state = await import('./state.js');
+    state.setCurrentBookId(null);
+    state.setCurrentUid(null);
+    setEntries([]);
+    renderSidebar();
+    renderEditorEmpty();
+    const el = $('file-name');
+    if (el) el.textContent = '未命名';
+    chatMessages.length = 0;
+    renderChatHistory();
+    tail = '，已无其它世界书';
   }
-  return { summary: '已删除「' + target.name + '」', detail: '世界书 #' + target.id + '（' + target.name + '）已永久删除' + tail };
+  ensureMemoryLoaded();
+  return tail;
 }

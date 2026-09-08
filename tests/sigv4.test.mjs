@@ -1,19 +1,15 @@
 // SigV4 签名回归测试：AWS 官方参考测试套件向量（s3-get-object / s3-put-object）
-// 从 server.js 提取签名函数验证（不复制实现，防止漂移）
+// 签名原语由 cloud-transports.js 对外提供，避免把 server.js 重新变成实现宿主。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
-const serverSrc = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'server.js'), 'utf8');
-const start = serverSrc.indexOf('function s3Sha256hex');
-const end = serverSrc.indexOf('// ---- 云端动作统一入口');
-if (start < 0 || end < 0) throw new Error('server.js 签名函数提取失败');
-// ES 模块严格模式下 eval 不泄漏声明：用 new Function（非严格体）取出函数引用，crypto 经参数注入
-const factory = new Function('crypto', serverSrc.slice(start, end) + '\n; return { s3Sha256hex, s3Hmac };');
-const { s3Sha256hex, s3Hmac } = factory(crypto);
+const require = createRequire(import.meta.url);
+const { createCloudTransports } = require('../server/cloud-transports.js');
+const { s3Sha256hex, s3Hmac } = createCloudTransports({
+  fetchImpl: async () => { throw new Error('network should not be used by SigV4 vector tests'); }
+});
 
 // 官方参考套件密钥（文档示例值，非真实凭据）
 const SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';

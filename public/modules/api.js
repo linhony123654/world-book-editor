@@ -2,10 +2,12 @@
 import { $, showToast, showConfirm, validateWorldBook, openModal, closeModal } from './utils.js';
 import {
   worldBook, entries, currentBookId, dirty, saveTimer,
-  setCurrentBookId, setDirty, setSaveTimer, applyWorldBook, setEntries, snapshotForUndo
+  setCurrentBookId, setDirty, setSaveTimer, applyWorldBook
 } from './state.js';
 import { rememberLastBookId } from './book-session.js';
 import { authHeaders } from './auth.js';
+import { runWorldBookCommand } from './domain/command-runtime.js';
+import { CommandType } from './domain/worldbook-commands.js';
 
 // 多端冲突检测：记录加载/保存时的服务端 updated_at，保存时回传比对
 let baseUpdatedAt = null;
@@ -184,30 +186,15 @@ function importAsNewBook(data, name, renderSidebar, selectEntry, renderEditorEmp
   });
 }
 
-// 合并到当前书：新 uid 递增分配；skipDupes 时跳过重复条目
+// 合并到当前书：Command 层统一 UID 分配、重复判定、Undo 与 entries 同步。
 function mergeImport(data, skipDupes) {
   const incoming = Object.values(data.entries || {}).sort((a, b) => (a.uid || 0) - (b.uid || 0));
-  const existing = entries.slice();
-  let uid = nextUidLocal();
-  let added = 0, skipped = 0;
-  snapshotForUndo('导入合并');
-  for (const e of incoming) {
-    const dup = skipDupes && existing.some(x =>
-      (x.comment && x.comment === e.comment) || (x.content && x.content === e.content && e.content.trim()));
-    if (dup) { skipped++; continue; }
-    const copy = JSON.parse(JSON.stringify(e));
-    copy.uid = uid++;
-    worldBook.entries[copy.uid] = copy;
-    existing.push(copy);
-    added++;
-  }
-  setEntries(existing);
-  return { added, skipped };
-}
-function nextUidLocal() {
-  if (!worldBook || !worldBook.entries) return 0;
-  const uids = Object.values(worldBook.entries).map(e => e.uid || 0);
-  return uids.length > 0 ? Math.max(...uids) + 1 : 0;
+  const result = runWorldBookCommand({
+    type: CommandType.MERGE_ENTRIES,
+    entries: incoming,
+    skipDuplicates: !!skipDupes
+  }, { label: '导入合并' });
+  return { added: result.createdUids.length, skipped: result.skipped };
 }
 
 // 导入选择弹窗（仅出现一次绑定；mode: merge / all / new）
