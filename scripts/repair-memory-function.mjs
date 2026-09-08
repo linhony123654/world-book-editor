@@ -34,9 +34,11 @@ const marker = `function pushTurnMemory({ user, trace, reply }) {
 const markerIndex = src.indexOf(marker);
 if (markerIndex < 0) throw new Error('new pushTurnMemory implementation missing');
 const staleIndex = src.indexOf(stale, markerIndex + marker.length);
-if (staleIndex !== markerIndex + marker.length + 1) {
-  throw new Error('stale pushTurnMemory remainder not found at expected boundary: ' + staleIndex);
-}
+if (staleIndex < 0) throw new Error('stale pushTurnMemory remainder missing');
+if (src.indexOf(stale, staleIndex + stale.length) >= 0) throw new Error('multiple stale pushTurnMemory remainders found');
+const between = src.slice(markerIndex + marker.length, staleIndex);
+if (!/^\s*$/.test(between)) throw new Error('unexpected code between new and stale pushTurnMemory bodies');
+
 src = src.slice(0, staleIndex) + src.slice(staleIndex + stale.length);
 
 if ((src.match(/function pushTurnMemory\(/g) || []).length !== 1) throw new Error('unexpected pushTurnMemory count');
