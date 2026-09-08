@@ -10,6 +10,7 @@ import { chooseInitialBookId } from './modules/book-session.js';
 import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.js';
 import { checkAuth, bindAuth, showLoginScreen, authHeaders } from './modules/auth.js';
 import { createVersionHistoryController } from './modules/app/version-history.js';
+import { createAccountCloudController } from './modules/app/account-cloud.js';
 
 const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings', 'me'];
 
@@ -71,24 +72,8 @@ function setScreen(name) {
   else window.scrollTo(0, 0);
   if (name === 'archives') renderArchives();
   if (name === 'settings') { refreshSettings(); setSettab('pref'); }
-  if (name === 'me') fillProfile();
+  if (name === 'me') accountCloud.fillProfile();
   if (name === 'editor') autoSizeTitle(); // 隐藏时渲染过标题，切回来重算高度
-}
-
-// ===== 我的页：填充账号信息（用户名 + 头像首字） =====
-async function fillProfile() {
-  const nameEl = $('meUsername');
-  const avatarEl = $('meAvatar');
-  if (!nameEl) return;
-  try {
-    const data = await cloudApi('/api/me', 'GET');
-    if (data.username) {
-      nameEl.textContent = data.username;
-      if (avatarEl) avatarEl.textContent = String(data.username).slice(0, 1).toUpperCase();
-    }
-  } catch (e) {
-    nameEl.textContent = '—';
-  }
 }
 
 // ===== 选中条目回调（渲染编辑器，不强制切屏） =====
@@ -111,6 +96,25 @@ const versionHistory = createVersionHistoryController({
   ensureMemoryLoaded,
   showToast,
   confirmFn: message => confirm(message)
+});
+
+const accountCloud = createAccountCloudController({
+  $,
+  escHtml,
+  escAttr,
+  showToast,
+  showConfirm,
+  openModal,
+  closeModal,
+  authHeaders,
+  fetchImpl: (...args) => fetch(...args),
+  loadBookList,
+  loadBook,
+  getCurrentBookId: () => currentBookId,
+  renderSidebar,
+  selectEntry: onSelectEntry,
+  renderEditorEmpty,
+  ensureMemoryLoaded
 });
 
 // ===== 初始化 =====
@@ -136,8 +140,8 @@ async function bootApp() {
   bindApiModal();
   bindModalClose();
   bindUndo();
-  bindCloud();
-  bindMe();
+  accountCloud.bindCloud();
+  accountCloud.bindMe();
 
   initSidebar(onSelectEntry, setScreen);
   initChat();
@@ -781,202 +785,6 @@ function bindApiModal() {
       status.className = 'model-status error';
     }
   });
-}
-
-// ===== 外置存储（WebDAV / S3 兼容） =====
-function setCloudStatus(msg, cls) {
-  const el = $('cloudStatus');
-  if (!el) return;
-  el.textContent = msg || '';
-  el.className = 'cloud-status' + (cls ? ' ' + cls : '');
-}
-function cloudProvider() {
-  return ($('cloudProviderS3') && $('cloudProviderS3').checked) ? 's3' : 'webdav';
-}
-function cloudConfigFromForm() {
-  const cfg = { provider: cloudProvider(), remote_path: $('cloudRemotePath').value.trim() || 'world-books-backup.json' };
-  if (cfg.provider === 's3') {
-    cfg.s3_endpoint = $('cloudS3Endpoint').value.trim();
-    cfg.s3_region = $('cloudS3Region').value.trim() || 'us-east-1';
-    cfg.s3_bucket = $('cloudS3Bucket').value.trim();
-    cfg.s3_access_key = $('cloudS3AccessKey').value.trim();
-    cfg.s3_secret_key = $('cloudS3SecretKey').value;
-  } else {
-    cfg.webdav_url = $('cloudWebdavUrl').value.trim();
-    cfg.webdav_user = $('cloudWebdavUser').value.trim();
-    cfg.webdav_pass = $('cloudWebdavPass').value;
-  }
-  return cfg;
-}
-function cloudFillForm(cfg) {
-  if (!cfg) return;
-  const isS3 = cfg.provider === 's3';
-  const webdavRadio = $('cloudProviderWebdav');
-  const s3Radio = $('cloudProviderS3');
-  if (webdavRadio) webdavRadio.checked = !isS3;
-  if (s3Radio) s3Radio.checked = isS3;
-  if ($('cloudFieldsWebdav')) $('cloudFieldsWebdav').hidden = isS3;
-  if ($('cloudFieldsS3')) $('cloudFieldsS3').hidden = !isS3;
-  if ($('cloudWebdavUrl')) $('cloudWebdavUrl').value = cfg.webdav_url || '';
-  if ($('cloudWebdavUser')) $('cloudWebdavUser').value = cfg.webdav_user || '';
-  if ($('cloudWebdavPass')) $('cloudWebdavPass').value = cfg.webdav_pass || '';
-  if ($('cloudS3Endpoint')) $('cloudS3Endpoint').value = cfg.s3_endpoint || '';
-  if ($('cloudS3Region')) $('cloudS3Region').value = cfg.s3_region || 'us-east-1';
-  if ($('cloudS3Bucket')) $('cloudS3Bucket').value = cfg.s3_bucket || '';
-  if ($('cloudS3AccessKey')) $('cloudS3AccessKey').value = cfg.s3_access_key || '';
-  if ($('cloudS3SecretKey')) $('cloudS3SecretKey').value = cfg.s3_secret_key || '';
-  if ($('cloudRemotePath')) $('cloudRemotePath').value = cfg.remote_path || 'world-books-backup.json';
-}
-async function cloudApi(path, method, body) {
-  const opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json', ...authHeaders() } };
-  if (body) opts.body = JSON.stringify(body);
-  const resp = await fetch(path, opts);
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
-  return data;
-}
-
-function bindCloud() {
-  const loadCfg = async () => {
-    try { cloudFillForm(await cloudApi('/api/cloud/config')); }
-    catch (e) { setCloudStatus('配置读取失败: ' + e.message, 'err'); }
-  };
-  loadCfg();
-
-  // 切换 provider 时切换字段区
-  const webdavRadio = $('cloudProviderWebdav');
-  const s3Radio = $('cloudProviderS3');
-  if (webdavRadio && s3Radio) {
-    const onToggle = () => {
-      const isS3 = s3Radio.checked;
-      const w = $('cloudFieldsWebdav'); if (w) w.hidden = isS3;
-      const s = $('cloudFieldsS3'); if (s) s.hidden = !isS3;
-    };
-    webdavRadio.addEventListener('change', onToggle);
-    s3Radio.addEventListener('change', onToggle);
-  }
-
-  $('cloudSaveBtn') && $('cloudSaveBtn').addEventListener('click', async () => {
-    try {
-      await cloudApi('/api/cloud/config', 'PUT', cloudConfigFromForm());
-      setCloudStatus('配置已保存', 'ok');
-      showToast('外置存储配置已保存', 'success');
-    } catch (e) {
-      setCloudStatus('保存失败: ' + e.message, 'err');
-    }
-  });
-
-  $('cloudTestBtn') && $('cloudTestBtn').addEventListener('click', async () => {
-    try {
-      await cloudApi('/api/cloud/config', 'PUT', cloudConfigFromForm());
-      setCloudStatus('测试中…');
-      const r = await cloudApi('/api/cloud/test', 'POST');
-      if (r.ok) { setCloudStatus('连接正常', 'ok'); showToast('云端连接正常', 'success'); }
-      else { setCloudStatus(r.error || '连接失败', 'err'); showToast(r.error || '连接失败', 'error'); }
-    } catch (e) {
-      setCloudStatus('测试失败: ' + e.message, 'err');
-    }
-  });
-
-  $('cloudUploadBtn') && $('cloudUploadBtn').addEventListener('click', async () => {
-    try {
-      await cloudApi('/api/cloud/config', 'PUT', cloudConfigFromForm());
-      setCloudStatus('上传中…');
-      const r = await cloudApi('/api/cloud/upload', 'POST');
-      setCloudStatus('已上传 ' + r.books + ' 本世界书（' + (r.exportedAt || '').replace('T', ' ').slice(0, 19) + '）', 'ok');
-      showToast('已上传 ' + r.books + ' 本世界书到云端', 'success');
-    } catch (e) {
-      setCloudStatus('上传失败: ' + e.message, 'err');
-      showToast('上传失败: ' + e.message, 'error');
-    }
-  });
-
-  $('cloudDownloadBtn') && $('cloudDownloadBtn').addEventListener('click', async () => {
-    const ok = await showConfirm({
-      title: '从云端拉取',
-      message: '将用云端备份整体覆盖当前所有世界书与 AI 记忆。本地当前数据会先自动备份到 backups/cloud/。继续？',
-      okText: '拉取并覆盖',
-      danger: true
-    });
-    if (!ok) return;
-    try {
-      await cloudApi('/api/cloud/config', 'PUT', cloudConfigFromForm());
-      setCloudStatus('拉取中…');
-      const r = await cloudApi('/api/cloud/download', 'POST');
-      // 数据已替换：重载当前书（或列表）
-      const books = await loadBookList();
-      const cur = (await import('./modules/state.js')).currentBookId;
-      const target = books.find(b => b.id === cur) || books[0];
-      if (target) {
-        await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty);
-        await ensureMemoryLoaded();
-      } else {
-        renderEditorEmpty();
-      }
-      setCloudStatus('已恢复 ' + r.books + ' 本世界书', 'ok');
-      showToast('已从云端恢复 ' + r.books + ' 本世界书', 'success');
-    } catch (e) {
-      setCloudStatus('拉取失败: ' + e.message, 'err');
-      showToast('拉取失败: ' + e.message, 'error');
-    }
-  });
-  $('cloudVersionsBtn') && $('cloudVersionsBtn').addEventListener('click', async () => {
-    const list = $('cloudVersionsList');
-    if (!list) return;
-    list.innerHTML = '<div class="empty-list">加载中…</div>';
-    openModal($('cloudVersionsModal'));
-    try {
-      const r = await cloudApi('/api/cloud/versions', 'GET');
-      if (!r.versions || r.versions.length === 0) {
-        list.innerHTML = '<div class="empty-list">暂无历史版本，上传时自动保留最近 5 个。</div>';
-        return;
-      }
-      list.innerHTML = r.versions.map(v =>
-        '<div class="shortcut-row">' +
-          '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">' +
-            '<small style="display:block;opacity:.7">' + escHtml(String(v.path).split('/').pop()) + '</small>' +
-            escHtml(String(v.uploaded_at || '').replace('T', ' ').slice(0, 19)) +
-          '</span>' +
-          '<button class="action danger" data-vpath="' + escAttr(v.path) + '">拉取</button>' +
-        '</div>'
-      ).join('');
-      list.querySelectorAll('[data-vpath]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const ok = await showConfirm({
-            title: '拉取历史版本',
-            message: '将用该历史版本整体覆盖当前所有世界书与 AI 记忆（本地先备份到 backups/cloud/）。继续？',
-            okText: '拉取并覆盖',
-            danger: true
-          });
-          if (!ok) return;
-          try {
-            await cloudApi('/api/cloud/config', 'PUT', cloudConfigFromForm());
-            const rr = await cloudApi('/api/cloud/download', 'POST', { versionPath: btn.dataset.vpath });
-            closeModal($('cloudVersionsModal'));
-            const books = await loadBookList();
-            const cur = (await import('./modules/state.js')).currentBookId;
-            const target = books.find(b => b.id === cur) || books[0];
-            if (target) {
-              await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty);
-              await ensureMemoryLoaded();
-            } else renderEditorEmpty();
-            setCloudStatus('已恢复历史版本（' + rr.books + ' 本世界书）', 'ok');
-            showToast('已从历史版本恢复 ' + rr.books + ' 本世界书', 'success');
-          } catch (e) {
-            showToast('拉取失败: ' + e.message, 'error');
-          }
-        });
-      });
-    } catch (e) {
-      list.innerHTML = '<div class="empty-list">读取失败: ' + escHtml(e.message) + '</div>';
-    }
-  });
-}
-
-// ===== 我的页：快捷键 / 关于 弹窗 =====
-function bindMe() {
-  $('meShortcutBtn') && $('meShortcutBtn').addEventListener('click', () => openModal($('shortcutModal')));
-  $('meAboutBtn') && $('meAboutBtn').addEventListener('click', () => openModal($('aboutModal')));
 }
 
 // ===== 启动 =====
