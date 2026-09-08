@@ -15,6 +15,7 @@ import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTempla
 import { streamFetch, streamSSE } from './ai/transport.js';
 import { createSafeToolExecutor, createToolExecutor } from './ai/tools/executor.js';
 import { WORLD_BOOK_MUTATION_TOOL_NAMES, createWorldBookMutationHandlers } from './ai/tools/worldbook-mutation.js';
+import { createWebSearchTool } from './ai/tools/web-search.js';
 import { createAuxiliaryCompletionClient } from './ai/auxiliary-client.js';
 import { runWorldBookCommand } from './domain/command-runtime.js';
 import { CommandType } from './domain/worldbook-commands.js';
@@ -1373,6 +1374,14 @@ const mutationToolHandlers = createWorldBookMutationHandlers({
   scheduleSave
 });
 
+const webSearchTool = createWebSearchTool({
+  fetchImpl: (...args) => fetch(...args),
+  getAuthHeaders: async () => {
+    const { authHeaders } = await import('./auth.js');
+    return authHeaders();
+  }
+});
+
 dispatchTool = createToolExecutor({
   handlers: {
     search_entries: toolSearch,
@@ -1386,7 +1395,7 @@ dispatchTool = createToolExecutor({
     check_entries: () => toolCheckEntries(),
     test_triggers: toolTestTriggers,
     export_book: () => toolExportBook(),
-    web_search: toolWebSearch,
+    web_search: webSearchTool,
     cleanup_book: () => toolCleanupBook(),
     find_duplicates: toolFindDuplicates,
     undo_last: toolUndo,
@@ -1618,29 +1627,6 @@ function toolExportBook() {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
   return { summary: '已导出「' + name + '」(' + getAllEntries().length + ' 条)', detail: 'JSON 文件已开始下载，可直接导入 SillyTavern。' };
-}
-
-// ===== 联网搜索 =====
-async function toolWebSearch({ query, limit }) {
-  const q = String(query || '').trim();
-  if (!q) return { summary: '缺少搜索词', detail: '请提供要搜索的内容' };
-  const { authHeaders } = await import('./auth.js');
-  const resp = await fetch('/api/proxy/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ q })
-  });
-  if (resp.status === 503) {
-    return { summary: '搜索服务被限流', detail: '搜索服务暂时被限流（反爬），请稍后重试或换关键词。你可以先用现有知识创作，稍后再补查。' };
-  }
-  if (!resp.ok) throw new Error('搜索接口 HTTP ' + resp.status);
-  const data = await resp.json();
-  const list = (data.results || []).slice(0, Math.max(1, Math.min(parseInt(limit, 10) || 3, 5)));
-  if (!list.length) return { summary: '搜索无结果', detail: '「' + q + '」没有找到结果，可换关键词重试' };
-  const lines = list.map((r, i) =>
-    (i + 1) + '. ' + r.title + '\n   ' + r.url + '\n   ' + (r.snippet || '(无摘要)')
-  );
-  return { summary: '搜索到 ' + list.length + ' 条（' + q + '）', detail: lines.join('\n\n') };
 }
 
 function toolUndo(args) {
