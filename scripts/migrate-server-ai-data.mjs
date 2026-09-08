@@ -38,7 +38,7 @@ for (const forbidden of [
   "app.get('/api/ai-data/:bookId'",
   "app.put('/api/ai-data/:bookId'",
   'SELECT memory, sessions, active_session FROM ai_data WHERE book_id = ?',
-  'INSERT INTO ai_data (book_id, ${kv.join(',
+  'ON CONFLICT(book_id) DO UPDATE SET ${upd}',
   'const parse = s =>'
 ]) {
   if (server.includes(forbidden)) throw new Error(`Legacy AI data implementation remains: ${forbidden}`);
