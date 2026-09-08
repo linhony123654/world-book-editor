@@ -13,6 +13,7 @@ import { applyDraftToEntry, createSmartDraftRecord, draftDisplayRows, formatDeci
 import { clearActiveSmartDraft, createSmartDraftState, setActiveSmartDraft, takeActiveSmartDraft } from './smart-draft-state.js';
 import { WRITING_TEMPLATE_FIELDS, applyWritingTemplateUpdate, buildWritingTemplateGenerationMessages, formatWritingTemplateForTool, loadWritingTemplate, parseWritingTemplateDraft, saveWritingTemplate, selectWritingTemplate, writingTemplateKey } from './writing-template.js';
 import { streamFetch, streamSSE } from './ai/transport.js';
+import { createSafeToolExecutor, createToolExecutor } from './ai/tools/executor.js';
 import { createAuxiliaryCompletionClient } from './ai/auxiliary-client.js';
 import { runWorldBookCommand } from './domain/command-runtime.js';
 import { CommandType } from './domain/worldbook-commands.js';
@@ -1057,20 +1058,19 @@ const MUTATING_TOOL_NAMES = new Set([
   'duplicate_entry', 'merge_entries', 'split_entry'
 ]);
 
-async function safeExecuteTool(name, args) {
-  // Turn-level rollback is a separate boundary from per-command undo.
-  // Read-only tools must not create fake undo history.
-  if (turnUndoBase === -1 && MUTATING_TOOL_NAMES.has(name)) {
-    snapshotForUndo('AI 回合开始');
-    turnUndoBase = undoStackLength();
-  }
-  try {
-    return await executeTool(name, args);
-  } catch (e) {
-    console.warn('[WBE] 工具执行异常:', name, e);
-    return { summary: name + ' 执行失败', detail: '工具 ' + name + ' 执行出错: ' + (e && e.message ? e.message : String(e)) };
-  }
-}
+let dispatchTool = null;
+const safeExecuteTool = createSafeToolExecutor({
+  executeTool: (name, args) => dispatchTool(name, args),
+  isMutating: name => MUTATING_TOOL_NAMES.has(name),
+  beforeMutation: () => {
+    // Turn-level rollback is separate from per-command undo. Read-only tools never snapshot.
+    if (turnUndoBase === -1) {
+      snapshotForUndo('AI 回合开始');
+      turnUndoBase = undoStackLength();
+    }
+  },
+  onError: (error, name) => console.warn('[WBE] 工具执行异常:', name, error)
+});
 
 async function sendChat(prevText) {
   if (isSending) return; // 防止重复发送
@@ -1360,46 +1360,45 @@ function appendToolLine(container, text) {
   if (isChatNearBottom()) scrollChatToBottom();
 }
 
-async function executeTool(name, args) {
-  console.log('[WBE] executeTool:', name, 'args keys:', Object.keys(args || {}).join(',')); // 不打印参数内容，避免敏感信息泄漏
-  switch (name) {
-    case 'search_entries': return toolSearch(args);
-    case 'get_entry': return toolGet(args);
-    case 'edit_entry': return toolEdit(args);
-    case 'add_entry': return toolAdd(args);
-    case 'add_entries': return toolAddMany(args || {});
-    case 'get_writing_template': return toolGetWritingTemplate(args || {});
-    case 'update_writing_template': return toolUpdateWritingTemplate(args || {});
-    case 'plan_smart_entry': return toolPlanSmartEntry(args || {});
-    case 'create_smart_entry': return toolCreateSmartEntry(args || {});
-    case 'delete_entry': return toolDelete(args);
-    case 'delete_entries': return toolDeleteMany(args || {});
-    case 'batch_edit': return toolBatchEdit(args);
-    case 'replace_text': return toolReplaceText(args || {});
-    case 'manage_keys': return toolManageKeys(args || {});
-    case 'move_entry': return toolMoveEntry(args || {});
-    case 'list_entries': return toolList(args || {});
-    case 'toggle_entry': return toolToggle(args);
-    case 'reorder_entry': return toolReorder(args);
-    case 'duplicate_entry': return toolDuplicate(args);
-    case 'merge_entries': return toolMergeEntries(args || {});
-    case 'split_entry': return toolSplitEntry(args || {});
-    case 'check_entries': return toolCheckEntries();
-    case 'test_triggers': return toolTestTriggers(args || {});
-    case 'export_book': return toolExportBook();
-    case 'web_search': return await toolWebSearch(args || {});
-    case 'cleanup_book': return toolCleanupBook();
-    case 'find_duplicates': return toolFindDuplicates(args || {});
-    case 'undo_last': return toolUndo(args);
-    case 'get_book_info': return toolBookInfo();
-    case 'list_books': return await toolListBooks();
-    case 'switch_book': return await toolSwitchBook(args || {});
-    case 'create_book': return await toolCreateBook(args || {});
-    case 'rename_book': return await toolRenameBook(args || {});
-    case 'delete_book': return await toolDeleteBook(args || {});
-    default: return { summary: '未知工具', detail: 'Unknown tool: ' + name };
+dispatchTool = createToolExecutor({
+  handlers: {
+    search_entries: toolSearch,
+    get_entry: toolGet,
+    edit_entry: toolEdit,
+    add_entry: toolAdd,
+    add_entries: toolAddMany,
+    get_writing_template: toolGetWritingTemplate,
+    update_writing_template: toolUpdateWritingTemplate,
+    plan_smart_entry: toolPlanSmartEntry,
+    create_smart_entry: toolCreateSmartEntry,
+    delete_entry: toolDelete,
+    delete_entries: toolDeleteMany,
+    batch_edit: toolBatchEdit,
+    replace_text: toolReplaceText,
+    manage_keys: toolManageKeys,
+    move_entry: toolMoveEntry,
+    list_entries: toolList,
+    toggle_entry: toolToggle,
+    reorder_entry: toolReorder,
+    duplicate_entry: toolDuplicate,
+    merge_entries: toolMergeEntries,
+    split_entry: toolSplitEntry,
+    check_entries: () => toolCheckEntries(),
+    test_triggers: toolTestTriggers,
+    export_book: () => toolExportBook(),
+    web_search: toolWebSearch,
+    cleanup_book: () => toolCleanupBook(),
+    find_duplicates: toolFindDuplicates,
+    undo_last: toolUndo,
+    get_book_info: () => toolBookInfo(),
+    list_books: () => toolListBooks(),
+    switch_book: toolSwitchBook,
+    create_book: toolCreateBook,
+    rename_book: toolRenameBook,
+    delete_book: toolDeleteBook
   }
-}
+});
+
 
 // 统一取全部条目
 function getAllEntries() {
