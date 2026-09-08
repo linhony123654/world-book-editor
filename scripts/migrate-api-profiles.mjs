@@ -29,6 +29,18 @@ replaceRegex(
   'legacy API profile storage block'
 );
 
+replaceExact(
+  `      const valid = payload.p.filter(p => p && p.id && p.url);\n      if (!valid.length) throw new Error('no profiles');\n      localStorage.setItem('wbe-api-profiles', JSON.stringify(valid));\n      if (payload.a && valid.some(p => p.id === payload.a)) {\n        localStorage.setItem('wbe-api-active', payload.a);\n        mirrorLegacy(valid.find(p => p.id === payload.a));\n      } else {\n        localStorage.setItem('wbe-api-active', valid[0].id);\n        mirrorLegacy(valid[0]);\n      }\n      refreshSettings();\n      showToast('已导入 ' + valid.length + ' 个接口配置', 'success');`,
+  `      const imported = profileRepo.replaceImported(payload.p, payload.a);\n      if (!imported.profiles.length) throw new Error('no profiles');\n      refreshSettings();\n      showToast('已导入 ' + imported.profiles.length + ' 个接口配置', 'success');`,
+  'config-key profile import persistence'
+);
+
+replaceExact(
+  `    if (activeProfileId() === editingProfileId) {\n      if (arr.length) setActiveProfile(arr[0].id);\n      else { localStorage.removeItem('wbe-api-active'); mirrorLegacy(null); }\n    }`,
+  `    if (activeProfileId() === editingProfileId) {\n      if (arr.length) setActiveProfile(arr[0].id);\n      else profileRepo.clearActive();\n    }`,
+  'last profile active-state cleanup'
+);
+
 for (const token of [
   "localStorage.getItem('wbe-api-profiles')",
   "localStorage.setItem('wbe-api-profiles'",
@@ -38,13 +50,13 @@ for (const token of [
 ]) {
   if (src.includes(token)) throw new Error(`legacy API profile storage token remains in app.js: ${token}`);
 }
-if (!src.includes('createApiProfileRepository({') || !src.includes('profileRepo.setActive(id)')) {
+if (!src.includes('createApiProfileRepository({') || !src.includes('profileRepo.setActive(id)') || !src.includes('profileRepo.replaceImported(') || !src.includes('profileRepo.clearActive()')) {
   throw new Error('API profile repository delegation incomplete');
 }
 
 fs.writeFileSync(appPath, src);
 
-const boundaryTest = `import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport test from 'node:test';\n\nconst app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');\n\ntest('app delegates API profile persistence and legacy mirroring to repository', () => {\n  assert.match(app, /createApiProfileRepository\\(\\{/);\n  assert.match(app, /profileRepo\\.load\\(\\)/);\n  assert.match(app, /profileRepo\\.setActive\\(id\\)/);\n  assert.doesNotMatch(app, /localStorage\\.getItem\\('wbe-api-profiles'\\)/);\n  assert.doesNotMatch(app, /localStorage\\.setItem\\('wbe-api-profiles'/);\n  assert.doesNotMatch(app, /localStorage\\.getItem\\('wbe-api-active'\\)/);\n  assert.doesNotMatch(app, /localStorage\\.setItem\\('wbe-api-active'/);\n});\n`;
+const boundaryTest = `import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport test from 'node:test';\n\nconst app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');\n\ntest('app delegates API profile persistence and legacy mirroring to repository', () => {\n  assert.match(app, /createApiProfileRepository\\(\\{/);\n  assert.match(app, /profileRepo\\.load\\(\\)/);\n  assert.match(app, /profileRepo\\.setActive\\(id\\)/);\n  assert.match(app, /profileRepo\\.replaceImported\\(/);\n  assert.match(app, /profileRepo\\.clearActive\\(\\)/);\n  assert.doesNotMatch(app, /localStorage\\.getItem\\('wbe-api-profiles'\\)/);\n  assert.doesNotMatch(app, /localStorage\\.setItem\\('wbe-api-profiles'/);\n  assert.doesNotMatch(app, /localStorage\\.getItem\\('wbe-api-active'\\)/);\n  assert.doesNotMatch(app, /localStorage\\.setItem\\('wbe-api-active'/);\n  assert.doesNotMatch(app, /localStorage\\.removeItem\\('wbe-api-active'\\)/);\n});\n`;
 fs.writeFileSync(boundaryPath, boundaryTest);
 
 console.log('API profile repository migration prepared.');
