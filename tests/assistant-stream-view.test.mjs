@@ -6,6 +6,27 @@ import {
   createAssistantStreamView
 } from '../public/modules/ai/ui/assistant-stream-view.js';
 
+function installMinimalDocument() {
+  globalThis.document = {
+    createElement() {
+      let text = '';
+      return {
+        set textContent(value) { text = String(value ?? ''); },
+        get innerHTML() {
+          return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }
+      };
+    }
+  };
+}
+
+installMinimalDocument();
+
 test('stream markup renders typing, reasoning-open state, and escaped markdown', () => {
   assert.equal(buildAssistantStreamMarkup('', '', false), '<span class="typing-cursor">◊</span>');
 
