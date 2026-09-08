@@ -28,9 +28,9 @@ replaceOnce(
 );
 
 replaceOnce(
-  "  showToast\n});\n\n// ===== 初始化 =====\n",
-  `  showToast\n});\n\nconst modalLifecycle = createModalLifecycleController({\n  $,\n  documentRef: document,\n  closeModal\n});\n\nconst bootstrap = createAppBootstrapController({\n  windowRef: window,\n  documentRef: document,\n  bindAuth,\n  checkAuth,\n  showLoginScreen,\n  binders: [\n    () => navigation.bind(),\n    () => entryActions.bind(),\n    () => dataTools.bind(),\n    () => preferences.bind(),\n    () => apiSettings.bind(),\n    () => versionHistory.bind(),\n    () => modalLifecycle.bind(),\n    () => undoHistory.bind(),\n    () => accountCloud.bindCloud(),\n    () => accountCloud.bindMe()\n  ],\n  initSidebar,\n  initChat,\n  initBooks,\n  setWbeDeps,\n  renderSidebar,\n  selectEntry: onSelectEntry,\n  renderEditorEmpty,\n  setScreen,\n  loadBookList,\n  chooseInitialBookId,\n  loadBook,\n  ensureMemoryLoaded,\n  refreshSettings: () => preferences.refreshSettings()\n});\n\n// ===== 启动 =====\n`,
-  'bootstrap composition anchor'
+  "\n// ===== 初始化 =====\n",
+  `\nconst modalLifecycle = createModalLifecycleController({\n  $,\n  documentRef: document,\n  closeModal\n});\n\nconst bootstrap = createAppBootstrapController({\n  windowRef: window,\n  documentRef: document,\n  bindAuth,\n  checkAuth,\n  showLoginScreen,\n  binders: [\n    () => navigation.bind(),\n    () => entryActions.bind(),\n    () => dataTools.bind(),\n    () => preferences.bind(),\n    () => apiSettings.bind(),\n    () => versionHistory.bind(),\n    () => modalLifecycle.bind(),\n    () => undoHistory.bind(),\n    () => accountCloud.bindCloud(),\n    () => accountCloud.bindMe()\n  ],\n  initSidebar,\n  initChat,\n  initBooks,\n  setWbeDeps,\n  renderSidebar,\n  selectEntry: onSelectEntry,\n  renderEditorEmpty,\n  setScreen,\n  loadBookList,\n  chooseInitialBookId,\n  loadBook,\n  ensureMemoryLoaded,\n  refreshSettings: () => preferences.refreshSettings()\n});\n\n// ===== 初始化 =====\n`,
+  'bootstrap composition insertion'
 );
 
 removeSection('// ===== 初始化 =====\n', '// ===== 启动 =====\n', 'inline application bootstrap');
