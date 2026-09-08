@@ -11,50 +11,25 @@ import { readChatVisibleLimit, saveChatVisibleLimit } from './modules/chat-view.
 import { checkAuth, bindAuth, showLoginScreen, authHeaders } from './modules/auth.js';
 import { createVersionHistoryController } from './modules/app/version-history.js';
 import { createAccountCloudController } from './modules/app/account-cloud.js';
+import { createApiProfileRepository } from './modules/app/api-profiles.js';
 
 const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings', 'me'];
 
 // ===== 多 API 配置档案 =====
-// 存储：wbe-api-profiles = [{id,name,url,key,model,prompt}]，wbe-api-active = id
-// 切换/保存时把当前档案镜像到旧键(wbe-api-url/key/model/system-prompt)，chat.js 无需改动
+// Repository owns migration/storage/legacy mirrors; wrappers keep the existing settings call surface stable.
 let editingProfileId = null;
 
-function loadProfiles() {
-  let arr = [];
-  try { arr = JSON.parse(localStorage.getItem('wbe-api-profiles') || '[]'); } catch {}
-  if (!Array.isArray(arr)) arr = [];
-  // 迁移旧的单一配置
-  if (arr.length === 0) {
-    const url = localStorage.getItem('wbe-api-url') || '';
-    const key = localStorage.getItem('wbe-api-key') || '';
-    if (url || key) {
-      arr = [{
-        id: 'p' + Date.now(), name: '默认配置', url, key,
-        model: localStorage.getItem('wbe-model') || '',
-        prompt: localStorage.getItem('wbe-system-prompt') || ''
-      }];
-      localStorage.setItem('wbe-api-profiles', JSON.stringify(arr));
-      localStorage.setItem('wbe-api-active', arr[0].id);
-    }
-  }
-  return arr;
-}
-function saveProfiles(arr) { localStorage.setItem('wbe-api-profiles', JSON.stringify(arr)); }
-function activeProfileId() { return localStorage.getItem('wbe-api-active') || ''; }
-function getProfile(id) { return loadProfiles().find(p => p.id === id) || null; }
-function mirrorLegacy(p) {
-  localStorage.setItem('wbe-api-url', (p && p.url) || '');
-  localStorage.setItem('wbe-api-key', (p && p.key) || '');
-  localStorage.setItem('wbe-model', (p && p.model) || '');
-  localStorage.setItem('wbe-system-prompt', (p && p.prompt) || '');
-}
-function setActiveProfile(id) {
-  const p = getProfile(id);
-  if (!p) return;
-  localStorage.setItem('wbe-api-active', id);
-  mirrorLegacy(p);
-  refreshSettings();
-}
+const profileRepo = createApiProfileRepository({
+  storage: localStorage,
+  onActiveChanged: () => refreshSettings()
+});
+
+function loadProfiles() { return profileRepo.load(); }
+function saveProfiles(arr) { return profileRepo.save(arr); }
+function activeProfileId() { return profileRepo.activeId(); }
+function getProfile(id) { return profileRepo.get(id); }
+function mirrorLegacy(profile) { return profileRepo.mirrorLegacy(profile); }
+function setActiveProfile(id) { return profileRepo.setActive(id); }
 
 // ===== 屏幕切换 =====
 function setScreen(name) {
@@ -379,18 +354,10 @@ function bindSettings() {
       }
       const payload = JSON.parse(payloadJson);
       if (!payload || !Array.isArray(payload.p)) throw new Error('bad key');
-      const valid = payload.p.filter(p => p && p.id && p.url);
-      if (!valid.length) throw new Error('no profiles');
-      localStorage.setItem('wbe-api-profiles', JSON.stringify(valid));
-      if (payload.a && valid.some(p => p.id === payload.a)) {
-        localStorage.setItem('wbe-api-active', payload.a);
-        mirrorLegacy(valid.find(p => p.id === payload.a));
-      } else {
-        localStorage.setItem('wbe-api-active', valid[0].id);
-        mirrorLegacy(valid[0]);
-      }
+      const imported = profileRepo.replaceImported(payload.p, payload.a);
+      if (!imported.profiles.length) throw new Error('no profiles');
       refreshSettings();
-      showToast('已导入 ' + valid.length + ' 个接口配置', 'success');
+      showToast('已导入 ' + imported.profiles.length + ' 个接口配置', 'success');
     } catch (e) {
       showToast('秘钥无效或密码错误', 'error');
     }
@@ -711,7 +678,7 @@ function bindApiModal() {
     saveProfiles(arr);
     if (activeProfileId() === editingProfileId) {
       if (arr.length) setActiveProfile(arr[0].id);
-      else { localStorage.removeItem('wbe-api-active'); mirrorLegacy(null); }
+      else profileRepo.clearActive();
     }
     showToast('已删除「' + (p ? p.name : '') + '」', 'success');
     editingProfileId = arr.length ? activeProfileId() : null;
