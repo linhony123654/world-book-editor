@@ -28,7 +28,9 @@ test('read preserves legacy HTTP status error behavior', async () => {
 test('writes are serialized and preserve request shape', async () => {
   const events = [];
   let releaseFirst;
+  let resolveFirstStarted;
   const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  const firstStarted = new Promise(resolve => { resolveFirstStarted = resolve; });
   let callIndex = 0;
 
   const repository = createAiDataRepository({
@@ -37,7 +39,10 @@ test('writes are serialized and preserve request shape', async () => {
       callIndex += 1;
       const index = callIndex;
       events.push('start-' + index);
-      if (index === 1) await firstGate;
+      if (index === 1) {
+        resolveFirstStarted();
+        await firstGate;
+      }
       events.push('end-' + index);
       assert.equal(url, '/api/ai-data/9');
       assert.equal(init.method, 'PUT');
@@ -49,8 +54,7 @@ test('writes are serialized and preserve request shape', async () => {
 
   const first = repository.write(9, { sessions: ['a'] });
   const second = repository.write(9, { sessions: ['b'] });
-  await Promise.resolve();
-  await Promise.resolve();
+  await firstStarted;
   assert.deepEqual(events, ['start-1']);
   releaseFirst();
   await Promise.all([first, second]);
