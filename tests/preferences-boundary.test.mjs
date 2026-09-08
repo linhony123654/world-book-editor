@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const navigation = fs.readFileSync(new URL('../public/modules/app/navigation.js', import.meta.url), 'utf8');
 
 test('app delegates preferences lifecycle and rendering to controller', () => {
   assert.match(app, /createPreferencesController\(\{/);
   assert.match(app, /preferences\.bind\(\)/);
   assert.match(app, /preferences\.refreshSettings\(\)/);
-  assert.match(app, /preferences\.setSettingsTab\('pref'\)/);
+  assert.match(app, /setSettingsTab: tab => preferences\.setSettingsTab\(tab\)/);
+  assert.match(navigation, /setSettingsTab\('pref'\)/);
   assert.doesNotMatch(app, /function setSettab/);
   assert.doesNotMatch(app, /function bindSettabs/);
   assert.doesNotMatch(app, /async function refreshSettings/);
