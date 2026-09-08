@@ -32,7 +32,7 @@ test('stream markup renders typing, reasoning-open state, and escaped markdown',
 
   const streaming = buildAssistantStreamMarkup('**answer**', '<think>', true);
   assert.match(streaming, /<details class="reasoning-box" open>/);
-  assert.match(streaming, /<div class="stream-content"><strong>answer<\/strong><\/div>/);
+  assert.match(streaming, /<div class="stream-content"><p class="md-p"><strong>answer<\/strong><\/p><\/div>/);
   assert.match(streaming, /&lt;think&gt;/);
 
   const final = buildAssistantStreamMarkup('done', 'reason', false);
@@ -67,8 +67,8 @@ test('view incrementally updates existing content and reasoning nodes', () => {
   };
   const view = createAssistantStreamView({ requestFrame: null, cancelFrame: null });
   view.render(host, '**next**', 'why', false);
-  assert.equal(text.innerHTML, '<strong>next</strong>');
-  assert.equal(reasoningText.innerHTML, 'why');
+  assert.equal(text.innerHTML, '<p class="md-p"><strong>next</strong></p>');
+  assert.equal(reasoningText.innerHTML, '<p class="md-p">why</p>');
 });
 
 test('streaming renders coalesce through requestAnimationFrame and cancel stale frames', () => {
