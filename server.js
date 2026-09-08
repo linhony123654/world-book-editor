@@ -1,6 +1,5 @@
 const express = require('express');
 const path = require('path');
-const { Readable } = require('stream');
 const { createDatabase } = require('./server/database');
 const { createAuthService, createLoginRateLimiter, registerAuthRoutes } = require('./server/auth');
 const { createBooksService } = require('./server/books-service');
@@ -12,6 +11,8 @@ const { createCloudService } = require('./server/cloud-service');
 const { registerCloudRoutes } = require('./server/cloud-routes');
 const { createSearchService } = require('./server/search-service');
 const { registerSearchRoutes } = require('./server/search-routes');
+const { createAiProxyService } = require('./server/ai-proxy-service');
+const { registerAiProxyRoutes } = require('./server/ai-proxy-routes');
 
 const app = express();
 const PORT = process.env.PORT || 8084;
@@ -86,55 +87,9 @@ registerCloudRoutes(app, { cloudService });
 registerBookRoutes(app, { booksService });
 booksService.seedSampleIfEmpty();
 
-// ===== AI 代理：解决第三方网关真实响应缺 CORS 头导致浏览器拦截的问题 =====
-// 规整出 .../v1 基址
-function normalizeBase(url) {
-  let u = String(url || '').trim().replace(/\/+$/, '');
-  u = u.replace(/\/chat\/completions$/, '');
-  u = u.replace(/\/models$/, '');
-  if (!u.endsWith('/v1')) u = u.replace(/\/v1$/, '') + '/v1';
-  return u;
-}
-
-// 拉取模型列表
-app.post('/api/proxy/models', async (req, res) => {
-  const { url, key } = req.body || {};
-  if (!url || !key) return res.status(400).json({ error: '缺少 url 或 key' });
-  try {
-    const r = await fetch(normalizeBase(url) + '/models', {
-      headers: { 'Authorization': 'Bearer ' + key }
-    });
-    const text = await r.text();
-    res.status(r.status).type('application/json').send(text);
-  } catch (e) {
-    res.status(502).json({ error: '代理请求失败: ' + e.message });
-  }
-});
-
-// 流式聊天补全（把上游 SSE 原样透传回浏览器）
-app.post('/api/proxy/chat', async (req, res) => {
-  const { url, key, body } = req.body || {};
-  if (!url || !key || !body) return res.status(400).json({ error: '缺少 url / key / body' });
-  // 客户端断开（取消/超时/关页）时中止上游请求，避免资源泄漏
-  const ac = new AbortController();
-  res.on('close', () => { if (!res.writableEnded) ac.abort(); });
-  try {
-    const r = await fetch(normalizeBase(url) + '/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify(body),
-      signal: ac.signal
-    });
-    res.status(r.status);
-    res.set('Content-Type', r.headers.get('content-type') || 'text/event-stream');
-    res.set('Cache-Control', 'no-store');
-    if (!r.body) { res.end(); return; }
-    Readable.fromWeb(r.body).pipe(res);
-  } catch (e) {
-    if (ac.signal.aborted) return; // 客户端已断开，无需响应
-    res.status(502).json({ error: '代理请求失败: ' + e.message });
-  }
-});
+// ===== AI Proxy =====
+const aiProxyService = createAiProxyService();
+registerAiProxyRoutes(app, { aiProxyService });
 
 // ===== API: 测试工具 =====
 app.post('/api/test-tool', (req, res) => {
