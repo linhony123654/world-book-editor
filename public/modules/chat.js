@@ -27,6 +27,7 @@ import { createAiDataRepository } from './ai/session/repository.js';
 import { createLegacyAiDataMigration } from './ai/session/migration.js';
 import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup, buildMemoryInjection as buildMemoryInjectionFromState, createTurnMemoryRecord, planRollup } from './ai/memory/policy.js';
 import { createAssistantStreamView } from './ai/ui/assistant-stream-view.js';
+import { createChatRenderer } from './ai/ui/chat-renderer.js';
 import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
 
 // ===== 聊天状态 =====
@@ -896,18 +897,26 @@ function updateToBottomBtn() {
   btn.hidden = !onChat || isChatNearBottom();
 }
 
-// ===== 创建 AI 消息占位 =====
+// ===== Chat DOM renderer =====
+const chatRenderer = createChatRenderer({
+  documentRef: document,
+  getContainer: () => $('chat-messages'),
+  getMessageCount: () => chatMessages.length,
+  attachAssistantActions: (el, idx) => attachResendBtn(el, idx),
+  attachUserActions: (el, idx) => attachMsgActions(el, idx),
+  applyVisibleLimit: applyChatVisibleLimit,
+  isNearBottom: isChatNearBottom,
+  scrollToBottom: scrollChatToBottom,
+  onOpenEntry: uid => {
+    selectEntry(uid);
+    document.dispatchEvent(new CustomEvent('wbe:goto-editor'));
+  },
+  onUndoTurn: base => undoThisTurn(base),
+  getTurnUndoBase: () => turnUndoBase
+});
+
 function createAssistantBubble() {
-  const container = $('chat-messages');
-  const welcome = container.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-  const div = document.createElement('div');
-  div.className = 'chat-msg chat-msg-assistant';
-  div.innerHTML = '<div class="chat-msg-role">AI</div><div class="chat-msg-text"><span class="typing-cursor">◊</span></div>';
-  container.appendChild(div);
-  applyChatVisibleLimit();
-  scrollChatToBottom(); // 新回复开始：强制滚到最后一条
-  return div.querySelector('.chat-msg-text');
+  return chatRenderer.createAssistantBubble();
 }
 
 // ===== 发送按钮忙碌态 =====
@@ -1126,71 +1135,14 @@ async function sendChat(prevText) {
 }
 
 function appendChatMessage(role, text, idx) {
-  const container = $('chat-messages');
-  const welcome = container.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-
-  // 工具调用：连续的折叠进同一个分组，避免一堆调用刷屏
-  if (role === 'tool') { appendToolLine(container, text); return; }
-
-  const div = document.createElement('div');
-  div.className = 'chat-msg chat-msg-' + role;
-  div.dataset.idx = idx != null ? idx : chatMessages.length;
-  div.innerHTML = '<div class="chat-msg-role">' + ({user:'你',assistant:'AI',tool:'工具',error:'错误'}[role]||role) + '</div>' +
-    '<div class="chat-msg-text">' + escHtml(text) + '</div>';
-  container.appendChild(div);
-  if (role === 'assistant') attachResendBtn(div, div.dataset.idx);
-  else if (role === 'user') attachMsgActions(div, div.dataset.idx);
-  applyChatVisibleLimit();
-  // 自己发的消息和错误强制滚底；其余贴底才跟随
-  if (role === 'user' || role === 'error' || isChatNearBottom()) scrollChatToBottom();
+  return chatRenderer.appendMessage(role, text, idx);
 }
 
 // ===== 本轮改动卡片：回合内条目级改动汇总，可点条目跳转、一键撤销本轮 =====
 let turnUndoBase = 0; // sendChat 开始时撤销栈深度（一键撤销恢复到该点）
 
 function appendChangesCard(changes) {
-  const container = $('chat-messages');
-  if (!container) return;
-  const welcome = container.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-  const div = document.createElement('div');
-  div.className = 'chat-msg chat-msg-changes';
-  const head = document.createElement('div');
-  head.className = 'chat-msg-role';
-  head.textContent = '本轮改动 · ' + changes.length + ' 项';
-  const list = document.createElement('div');
-  list.className = 'changes-list';
-  const icons = { add: '＋', delete: '✕', edit: '✎', merge: '⤷', split: '⧉', other: '·' };
-  for (const c of changes) {
-    const label = (icons[c.type] || icons.other) + ' ' + (c.tool || '') + (c.comment ? '「' + c.comment + '」' : '') + (c.detail ? ' — ' + c.detail : '');
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'change-item' + (c.type === 'delete' ? ' del' : '');
-    btn.textContent = label;
-    btn.title = c.type === 'delete' ? '该条目已删除' : '打开条目';
-    if (c.uid != null && c.type !== 'delete') {
-      const uid = c.uid;
-      btn.addEventListener('click', () => {
-        selectEntry(uid);
-        document.dispatchEvent(new CustomEvent('wbe:goto-editor'));
-      });
-    } else {
-      btn.disabled = true;
-    }
-    list.appendChild(btn);
-  }
-  const undoBtn = document.createElement('button');
-  undoBtn.type = 'button';
-  undoBtn.className = 'changes-undo';
-  undoBtn.textContent = '⟲ 撤销本轮 ' + changes.length + ' 项';
-  undoBtn.addEventListener('click', () => undoThisTurn(turnUndoBase));
-  div.appendChild(head);
-  div.appendChild(list);
-  div.appendChild(undoBtn);
-  container.appendChild(div);
-  applyChatVisibleLimit();
-  if (isChatNearBottom()) scrollChatToBottom();
+  return chatRenderer.appendChangesCard(changes);
 }
 
 // 一键撤销本轮全部改动（恢复到回合开始时的「回合开始」快照）
@@ -1207,36 +1159,6 @@ function undoThisTurn(base) {
   else renderEditorEmpty();
   scheduleSave();
   import('./utils.js').then(m => m.showToast('已撤销本轮 ' + labels.length + ' 步', 'success'));
-}
-
-// 把连续的工具调用收进一个可展开分组（默认收起）
-function appendToolLine(container, text) {
-  let group = container.lastElementChild;
-  if (!group || !group.classList.contains('tool-group')) {
-    group = document.createElement('details');
-    group.className = 'tool-group';
-    group.innerHTML =
-      '<summary class="tool-sum">' +
-        '<span class="tool-ico">⚙</span>' +
-        '<span class="tool-sum-label">工具调用</span>' +
-        '<span class="tool-count">0</span>' +
-        '<span class="tool-latest"></span>' +
-      '</summary><div class="tool-lines"></div>';
-    container.appendChild(group);
-  }
-  const lines = group.querySelector('.tool-lines');
-  const sep = text.indexOf(': ');
-  const name = sep > 0 ? text.slice(0, sep) : text;
-  const summary = sep > 0 ? text.slice(sep + 2) : '';
-  const line = document.createElement('div');
-  line.className = 'tool-line';
-  line.innerHTML = '<span class="tool-line-name">' + escHtml(name) + '</span>' +
-    (summary ? '<span class="tool-line-sum">' + escHtml(summary) + '</span>' : '');
-  lines.appendChild(line);
-  group.querySelector('.tool-count').textContent = lines.children.length;
-  group.querySelector('.tool-latest').textContent = summary || name;
-  applyChatVisibleLimit();
-  if (isChatNearBottom()) scrollChatToBottom();
 }
 
 const mutationToolHandlers = createWorldBookMutationHandlers({
