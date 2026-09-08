@@ -58,7 +58,7 @@ if (!src.includes('createDataToolsController({') || !src.includes('dataTools.bin
 
 fs.writeFileSync(appPath, src);
 
-const boundaryTest = `import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport test from 'node:test';\n\nconst app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');\n\ntest('app delegates data transfer and config-key UI orchestration to controller', () => {\n  assert.match(app, /createDataToolsController\\(\\{/);\n  assert.match(app, /dataTools\\.bind\\(\\)/);\n  assert.match(app, /copyText,/);\n  assert.doesNotMatch(app, /function bindSettings/);\n  assert.doesNotMatch(app, /navigator\\.clipboard\\.writeText/);\n  assert.doesNotMatch(app, /profileRepo\\.replaceImported\\(payload\\.p, payload\\.a\\)/);\n  assert.doesNotMatch(app, /await import\\('\.\/modules\/state\\.js'\\)/);\n});\n`;
+const boundaryTest = `import assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport test from 'node:test';\n\nconst app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');\n\ntest('app delegates data transfer and config-key UI orchestration to controller', () => {\n  assert.match(app, /createDataToolsController\\(\\{/);\n  assert.match(app, /dataTools\\.bind\\(\\)/);\n  assert.match(app, /copyText,/);\n  assert.doesNotMatch(app, /function bindSettings/);\n  assert.doesNotMatch(app, /navigator\\.clipboard\\.writeText/);\n  assert.doesNotMatch(app, /profileRepo\\.replaceImported\\(payload\\.p, payload\\.a\\)/);\n  assert.equal(app.includes(\"await import('./modules/state.js')\"), false);\n});\n`;
 fs.writeFileSync(boundaryPath, boundaryTest);
 
 console.log('Data tools migration prepared.');
