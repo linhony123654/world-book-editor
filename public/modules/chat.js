@@ -23,6 +23,7 @@ import { countMessagesTokens, trimToBudget } from './ai/conversation/budget.js';
 import { runConversationTurn } from './ai/conversation/engine.js';
 import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMemoryLimits, normalizeMemory, normalizeSessionList, pruneSessions, recentMemoryTurns, selectActiveSession, titleFromMessages, updateSessionFromChat, visibleMessagesFromSession } from './ai/session/model.js';
 import { createAiDataRepository } from './ai/session/repository.js';
+import { createLegacyAiDataMigration } from './ai/session/migration.js';
 import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup, buildMemoryInjection as buildMemoryInjectionFromState, createTurnMemoryRecord, planRollup } from './ai/memory/policy.js';
 import { formatChatText } from './ai/ui/markdown.js';
 import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
@@ -55,8 +56,6 @@ let memory = emptyMemory();
 let logBookId = null;     // 当前已加载记忆的 bookId
 let isRollingUp = false;  // 大总结进行中锁
 
-function memKey(bookId) { return 'wbe-memory:' + (bookId || 'unsaved'); }
-
 // ===== 会话/记忆持久化：后端 SQLite（容量不受 localStorage 限制），localStorage 仅作一次性迁移源 =====
 // 网络、鉴权与串行 PUT 由 repository 层负责；chat.js 只保留兼容调用名。
 const aiDataRepository = createAiDataRepository({
@@ -72,25 +71,35 @@ const aiDataRepository = createAiDataRepository({
 function persistPut(bookId, payload) {
   return aiDataRepository.write(bookId, payload);
 }
-function persistFetch(bookId) {
-  return aiDataRepository.read(bookId);
-}
 
-// 把损坏的本地数据备份到 wbe-corrupt-backup，避免坏数据被静默重置丢失
-function backupCorruptData(key, raw) {
-  try {
-    if (raw == null) return;
-    let backups = {};
-    try {
-      const old = JSON.parse(localStorage.getItem('wbe-corrupt-backup') || '{}');
-      if (old && typeof old === 'object') backups = old;
-    } catch (e) {}
-    backups[key] = String(raw).slice(0, 500000); // 限制备份大小，防止备份本身撑爆存储
-    localStorage.setItem('wbe-corrupt-backup', JSON.stringify(backups));
-  } catch (e) {
-    console.warn('[WBE] 备份损坏数据失败:', key, e);
+function reportLegacyMigrationWarning(code, error, meta = {}) {
+  if (code === 'session_remote_load_failed') {
+    console.warn('[WBE] 会话历史加载失败:', error.message);
+  } else if (code === 'sessions_local_corrupt') {
+    console.warn('[WBE] 会话历史数据损坏，已重置:', meta.key, error);
+  } else if (code === 'legacy_chat_corrupt') {
+    console.warn('[WBE] 旧版会话历史损坏，跳过迁移:', error.message);
+  } else if (code === 'memory_remote_migration_failed') {
+    console.warn('[WBE] 书级记忆迁移(后端)失败:', error.message);
+  } else if (code === 'memory_local_migration_failed') {
+    console.warn('[WBE] 书级记忆迁移(localStorage)失败:', error.message);
+  } else if (code === 'corrupt_backup_failed') {
+    console.warn('[WBE] 备份损坏数据失败:', meta.key, error);
   }
 }
+
+const legacyAiDataMigration = createLegacyAiDataMigration({
+  storage: localStorage,
+  repository: aiDataRepository,
+  makeSession,
+  titleFromMessages,
+  normalizeMemory,
+  emptyMemory,
+  onWarning: reportLegacyMigrationWarning,
+  onCorruptSessions: () => {
+    import('./utils.js').then(m => m.showToast('会话历史数据损坏，已备份并重置', 'error'));
+  }
+});
 
 function saveMemory() {
   try {
@@ -108,9 +117,6 @@ function saveMemory() {
 function recentTurns() { return recentMemoryTurns(memory); }
 
 // ===== 对话历史持久化（按世界书保存，支持多会话并行） =====
-function sessionsKey(bookId) { return 'wbe-sessions:' + (bookId || 'unsaved'); }
-function activeKey(bookId) { return 'wbe-active-session:' + (bookId || 'unsaved'); }
-
 let sessions = [];          // 当前书的会话列表
 let activeSessionId = null; // 活动会话 id
 
@@ -121,87 +127,22 @@ function accumulateSessionTokens() {
 }
 
 async function loadChatHistory(bookId) {
-  let data = null;
-  try {
-    data = await persistFetch(bookId);
-  } catch (e) {
-    console.warn('[WBE] 会话历史加载失败:', e.message);
-  }
-  let list = data && Array.isArray(data.sessions) ? data.sessions : null;
-  let activeId = data ? data.activeSession : null;
-  if (!list) {
-    // 一次性迁移：localStorage 旧数据 → 上传后端后删除
-    const key = sessionsKey(bookId);
-    let raw = null;
-    try { raw = localStorage.getItem(key); } catch {}
-    let local = null;
-    try { local = raw ? JSON.parse(raw) : null; } catch (e) {
-      console.warn('[WBE] 会话历史数据损坏，已重置:', key, e);
-      backupCorruptData(key, raw);
-      import('./utils.js').then(m => m.showToast('会话历史数据损坏，已备份并重置', 'error'));
-    }
-    if (!Array.isArray(local)) {
-      // 迁移旧版单会话历史 wbe-chat:<bookId>
-      let old = [];
-      try {
-        const oldRaw = localStorage.getItem('wbe-chat:' + (bookId || 'unsaved'));
-        if (oldRaw) old = JSON.parse(oldRaw);
-      } catch (e) { console.warn('[WBE] 旧版会话历史损坏，跳过迁移:', e.message); }
-      local = [];
-      if (Array.isArray(old) && old.length) {
-        const s = makeSession();
-        s.messages = old;
-        s.title = titleFromMessages(old);
-        local.push(s);
-      }
-    }
-    if (local.length) {
-      list = local;
-      activeId = localStorage.getItem(activeKey(bookId)) || null;
-      persistPut(bookId, { sessions: list, activeSession: activeId });
-    }
-    try {
-      localStorage.removeItem(key);
-      localStorage.removeItem(activeKey(bookId));
-      localStorage.removeItem('wbe-chat:' + (bookId || 'unsaved'));
-    } catch {}
-  }
-  sessions = normalizeSessionList(list);
-  const target = selectActiveSession(sessions, activeId);
+  const seed = await legacyAiDataMigration.loadSessionSeed(bookId);
+  sessions = normalizeSessionList(seed.sessions);
+  const target = selectActiveSession(sessions, seed.activeSession);
   activeSessionId = target ? target.id : null;
   chatMessages.length = 0;
   if (target) {
     chatMessages.push(...visibleMessagesFromSession(target));
-    // 会话级记忆：若该会话还没有记忆，迁移旧的「书级记忆」（后端 ai_data / localStorage）到该会话
+    // 会话级记忆：若该会话还没有记忆，迁移旧的「书级记忆」到该会话。
     if (!target.memory) {
-      target.memory = await migrateLegacyMemory(bookId);
+      target.memory = await legacyAiDataMigration.migrateLegacyMemory(bookId);
     }
     memory = normalizeMemory(target.memory);
   } else {
     memory = emptyMemory();
   }
   updateMemoryBadge();
-}
-
-// 旧书级记忆一次性迁移：后端 ai_data.memory 或 localStorage wbe-memory:<bookId> → 当前会话
-async function migrateLegacyMemory(bookId) {
-  try {
-    const data = await persistFetch(bookId);
-    if (data && data.memory) {
-      persistPut(bookId, { memory: null }); // 迁移后清空后端书级记忆
-      return normalizeMemory(data.memory);
-    }
-  } catch (e) { console.warn('[WBE] 书级记忆迁移(后端)失败:', e.message); }
-  try {
-    const key = memKey(bookId);
-    const raw = localStorage.getItem(key);
-    if (raw) {
-      const m = JSON.parse(raw);
-      localStorage.removeItem(key);
-      if (m && (m.turns || m.rollups)) return normalizeMemory(m);
-    }
-  } catch (e) { console.warn('[WBE] 书级记忆迁移(localStorage)失败:', e.message); }
-  return emptyMemory();
 }
 
 function saveChatHistory() {
@@ -1570,10 +1511,7 @@ function currentBookName() {
 }
 
 function cleanupDeletedBookLocalData(bookId) {
-  localStorage.removeItem(memKey(bookId));
-  localStorage.removeItem(sessionsKey(bookId));
-  localStorage.removeItem(activeKey(bookId));
-  localStorage.removeItem('wbe-chat:' + bookId);
+  legacyAiDataMigration.cleanupBookLocalData(bookId);
 }
 
 async function handleDeletedCurrentBook({ remainingBooks }) {
