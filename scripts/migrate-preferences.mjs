@@ -71,9 +71,9 @@ replaceRegex(
   'settings tab functions'
 );
 
-replaceRegex(
-  /\n  const chatLimit = \$\('chatVisibleLimitInput'\);[\s\S]*?\n  \}\);\n\}/,
-  `\n}`,
+replaceExact(
+  `  const chatLimit = $('chatVisibleLimitInput');\n  if (chatLimit) chatLimit.addEventListener('change', () => {\n    const limit = saveChatVisibleLimit(chatLimit.value);\n    chatLimit.value = String(limit);\n    applyChatVisibleLimit();\n    showToast(limit === 0 ? '会话已设为显示全部' : '会话显示最近 ' + limit + ' 条', 'success');\n  });`,
+  ``,
   'chat visible limit listener'
 );
 
