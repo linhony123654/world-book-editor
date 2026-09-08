@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const { Readable } = require('stream');
 const { createDatabase } = require('./server/database');
 const { createAuthService, createLoginRateLimiter, registerAuthRoutes } = require('./server/auth');
+const { createBooksService } = require('./server/books-service');
+const { registerBookRoutes, registerVersionRoutes } = require('./server/books-routes');
 
 const app = express();
 const PORT = process.env.PORT || 8084;
@@ -55,63 +57,9 @@ const loginRateLimit = loginLimiter.middleware;
 loginLimiter.startCleanup();
 registerAuthRoutes(app, { db, authService, loginRateLimit });
 
-// ===== 版本历史：保存时自动快照（每本书保留最近 30 个 auto 版本） =====
-const MAX_AUTO_VERSIONS = 30;
-
-function snapshotVersion(bookId, data, entryCount, kind, note) {
-  const latest = db.prepare('SELECT data FROM book_versions WHERE book_id = ? ORDER BY id DESC LIMIT 1').get(bookId);
-  const json = JSON.stringify(data);
-  if (latest && latest.data === json) return false; // 内容没变不存
-  db.prepare('INSERT INTO book_versions (book_id, data, entry_count, kind, note) VALUES (?, ?, ?, ?, ?)')
-    .run(bookId, json, entryCount, kind || 'auto', note || '');
-  // 清理：只清 auto，保留 manual
-  const autos = db.prepare('SELECT id FROM book_versions WHERE book_id = ? AND kind = ? ORDER BY id DESC').all(bookId, 'auto');
-  if (autos.length > MAX_AUTO_VERSIONS) {
-    const keep = new Set(autos.slice(0, MAX_AUTO_VERSIONS).map(r => r.id));
-    const del = autos.filter(r => !keep.has(r.id)).map(r => r.id);
-    if (del.length) db.prepare('DELETE FROM book_versions WHERE id IN (' + del.join(',') + ')').run();
-  }
-  return true;
-}
-
-// ===== 版本 API =====
-app.get('/api/books/:id/versions', authRequired, (req, res) => {
-  const rows = db.prepare('SELECT id, entry_count, kind, note, data, created_at FROM book_versions WHERE book_id = ? ORDER BY id DESC LIMIT 50').all(req.params.id);
-  const list = rows.map(r => {
-    let titles = [];
-    try {
-      const data = JSON.parse(r.data);
-      titles = Object.values(data.entries || {}).slice(0, 3).map(e => String(e.comment || '(无标题)'));
-    } catch {}
-    return { id: r.id, entry_count: r.entry_count, kind: r.kind, note: r.note, created_at: r.created_at, titles };
-  });
-  res.json(list);
-});
-
-app.get('/api/books/:id/versions/:vid', authRequired, (req, res) => {
-  const row = db.prepare('SELECT * FROM book_versions WHERE id = ? AND book_id = ?').get(req.params.vid, req.params.id);
-  if (!row) return res.status(404).json({ error: '版本不存在' });
-  res.json({ id: row.id, data: JSON.parse(row.data), entry_count: row.entry_count, kind: row.kind, note: row.note, created_at: row.created_at });
-});
-
-app.post('/api/books/:id/rollback', authRequired, (req, res) => {
-  const bookId = req.params.id;
-  const vid = Number((req.body || {}).vid);
-  const note = String((req.body || {}).note || '').trim();
-  const version = db.prepare('SELECT * FROM book_versions WHERE id = ? AND book_id = ?').get(vid, bookId);
-  if (!version) return res.status(404).json({ error: '版本不存在' });
-  const current = db.prepare('SELECT data FROM world_books WHERE id = ?').get(bookId);
-  // 回滚前备份当前状态（防误回滚丢数据）
-  if (current) {
-    const cur = JSON.parse(current.data);
-    snapshotVersion(bookId, cur, Object.keys(cur.entries || {}).length, 'auto', '回滚前快照');
-  }
-  const data = JSON.parse(version.data);
-  const entryCount = Object.keys(data.entries || {}).length;
-  db.prepare("UPDATE world_books SET data = ?, entry_count = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(JSON.stringify(data), entryCount, bookId);
-  res.json({ ok: true, entry_count: entryCount, note: note || ('回滚到版本 #' + vid) });
-});
+// ===== Books / Versions =====
+const booksService = createBooksService({ db, rootDir: __dirname });
+registerVersionRoutes(app, { authRequired, booksService });
 
 // ===== 网络搜索代理：Bing 主源 + DuckDuckGo 备源（免费无 key） =====
 const SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
@@ -519,81 +467,9 @@ app.post('/api/cloud/download', async (req, res) => {
   }
 });
 
-// ===== API: 列出所有世界书 =====
-app.get('/api/books', (req, res) => {
-  const rows = db.prepare('SELECT id, name, entry_count, created_at, updated_at FROM world_books ORDER BY updated_at DESC').all();
-  res.json(rows);
-});
-
-// ===== API: 获取世界书 =====
-app.get('/api/books/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM world_books WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'not found' });
-  res.json({ id: row.id, name: row.name, data: JSON.parse(row.data), entry_count: row.entry_count, updated_at: row.updated_at });
-});
-
-// ===== API: 创建世界书（导入） =====
-app.post('/api/books', (req, res) => {
-  const { name, data } = req.body;
-  if (!data || !data.entries) return res.status(400).json({ error: 'invalid data' });
-  const entryCount = Object.keys(data.entries).length;
-  const result = db.prepare('INSERT INTO world_books (name, data, entry_count) VALUES (?, ?, ?)').run(name || 'untitled', JSON.stringify(data), entryCount);
-  res.json({ id: result.lastInsertRowid, entry_count: entryCount });
-});
-
-// ===== API: 保存世界书（自动保存） =====
-app.put('/api/books/:id', (req, res) => {
-  const existing = db.prepare('SELECT id, updated_at FROM world_books WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'not found' });
-  const { data, name, baseUpdatedAt, force } = req.body;
-  if (!data || !data.entries) return res.status(400).json({ error: 'invalid data' });
-  // 多端冲突检测：baseUpdatedAt 与库中 updated_at 不一致 = 数据已在别处被修改
-  if (!force && baseUpdatedAt && existing.updated_at !== baseUpdatedAt) {
-    return res.status(409).json({ error: 'conflict', message: '数据已在其他设备/标签页被修改', serverUpdatedAt: existing.updated_at });
-  }
-  const entryCount = Object.keys(data.entries).length;
-  const updates = [];
-  const params = [];
-  if (name) { updates.push('name = ?'); params.push(name); }
-  updates.push('data = ?', 'entry_count = ?', "updated_at = datetime('now')");
-  params.push(JSON.stringify(data), entryCount, req.params.id);
-  db.prepare(`UPDATE world_books SET ${updates.join(', ')} WHERE id = ?`).run(...params);
-  snapshotVersion(req.params.id, data, entryCount, 'auto', '');
-  const row = db.prepare('SELECT updated_at FROM world_books WHERE id = ?').get(req.params.id);
-  res.json({ ok: true, entry_count: entryCount, updated_at: row.updated_at });
-});
-
-// ===== API: 删除世界书（删除前自动备份到 backups/deleted/，防止误删） =====
-app.delete('/api/books/:id', (req, res) => {
-  const row = db.prepare('SELECT id, name, data FROM world_books WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'not found' });
-  try {
-    const dir = path.join(__dirname, 'backups', 'deleted');
-    fs.mkdirSync(dir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const safeName = String(row.name || 'book').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60);
-    fs.writeFileSync(path.join(dir, ts + '-' + row.id + '-' + safeName + '.json'), row.data);
-    // 保留最近 20 份删除备份（文件名时间戳前缀，字典序即时间序）
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
-    while (files.length > 20) fs.unlinkSync(path.join(dir, files.shift()));
-  } catch (e) {
-    console.error('[WBE] 删除备份失败:', e.message);
-  }
-  db.prepare('DELETE FROM world_books WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
-});
-
-// ===== 首次启动：导入 sample.json =====
-const count = db.prepare('SELECT COUNT(*) as c FROM world_books').get().c;
-if (count === 0) {
-  const samplePath = path.join(__dirname, 'sample.json');
-  if (fs.existsSync(samplePath)) {
-    const data = JSON.parse(fs.readFileSync(samplePath, 'utf8'));
-    const entryCount = Object.keys(data.entries).length;
-    db.prepare('INSERT INTO world_books (name, data, entry_count) VALUES (?, ?, ?)').run('sample.json', JSON.stringify(data), entryCount);
-    console.log('[WBE] Imported sample.json (' + entryCount + ' entries)');
-  }
-}
+// ===== Books API =====
+registerBookRoutes(app, { booksService });
+booksService.seedSampleIfEmpty();
 
 // ===== AI 代理：解决第三方网关真实响应缺 CORS 头导致浏览器拦截的问题 =====
 // 规整出 .../v1 基址
