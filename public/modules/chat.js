@@ -30,6 +30,8 @@ import { createAssistantStreamView } from './ai/ui/assistant-stream-view.js';
 import { createChatRenderer } from './ai/ui/chat-renderer.js';
 import { createChatComposer } from './ai/ui/chat-composer.js';
 import { createMessageActionsView } from './ai/ui/message-actions-view.js';
+import { createMessageEditView } from './ai/ui/message-edit-view.js';
+import { copyText } from './ai/ui/clipboard.js';
 import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
 
 // ===== 聊天状态 =====
@@ -661,26 +663,20 @@ export function initChat() {
 // msgEl 可能是 .chat-msg-text（流式气泡）或外层 .chat-msg：按钮行统一挂外层气泡
 // idx 缺省时取最后一条消息（流式完成场景，修复此前 undefined 索引导致点击无效）
 // 复制消息文本：navigator.clipboard 失败时降级 textarea + execCommand（http 环境可用）
-function copyMsgText(i) {
+async function copyMsgText(i) {
   const m = chatMessages[i];
   const text = m ? String(m.content || '') : '';
-  if (!text) { import('./utils.js').then(u => u.showToast('没有可复制的内容', 'info')); return; }
-  const done = () => import('./utils.js').then(u => u.showToast('已复制到剪贴板', 'success'));
-  const fallback = () => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-    document.body.removeChild(ta);
-    if (ok) done(); else import('./utils.js').then(u => u.showToast('复制失败', 'error'));
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done).catch(fallback);
-  } else fallback();
+  if (!text) {
+    import('./utils.js').then(u => u.showToast('没有可复制的内容', 'info'));
+    return;
+  }
+  try {
+    const copied = await copyText(text, { navigatorRef: navigator, documentRef: document });
+    import('./utils.js').then(u => u.showToast(copied ? '已复制到剪贴板' : '复制失败', copied ? 'success' : 'error'));
+  } catch (e) {
+    console.warn('[WBE] 复制消息失败:', e);
+    import('./utils.js').then(u => u.showToast('复制失败', 'error'));
+  }
 }
 
 const messageActionsView = createMessageActionsView({
@@ -720,43 +716,29 @@ function toolCleanupBook() {
 function attachResendBtn(msgEl, idx) { attachMsgRow(msgEl, idx); }
 function attachMsgActions(msgEl, idx) { attachMsgRow(msgEl, idx); }
 
-function startEditMsg(msgEl, idx) {
-  const i = idx != null ? Number(idx) : -1;
-  const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
-  if (!host || i < 0 || i >= chatMessages.length || host.classList.contains('chat-msg-editing')) return;
-  const textEl = msgEl.classList.contains('chat-msg-text') ? msgEl : msgEl.querySelector('.chat-msg-text');
-  const cur = chatMessages[i];
-  if (!textEl || !cur) return;
-  host.classList.add('chat-msg-editing');
-  const ta = document.createElement('textarea');
-  ta.className = 'chat-msg-edit-textarea';
-  ta.value = cur.content;
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'action primary';
-  saveBtn.textContent = '保存';
-  const cancelBtn = document.createElement('button');
-  cancelBtn.className = 'action';
-  cancelBtn.textContent = '取消';
-  const actions = document.createElement('div');
-  actions.className = 'chat-msg-edit-actions';
-  actions.appendChild(cancelBtn);
-  actions.appendChild(saveBtn);
-  textEl.innerHTML = '';
-  textEl.appendChild(ta);
-  textEl.appendChild(actions);
-  ta.focus();
-  saveBtn.addEventListener('click', () => {
-    const v = ta.value.trim();
-    if (!v) { import('./utils.js').then(m => m.showToast('内容不能为空', 'error')); return; }
-    cur.content = v;
+const messageEditView = createMessageEditView({
+  documentRef: document,
+  onEmpty: () => import('./utils.js').then(m => m.showToast('内容不能为空', 'error')),
+  onCancel: () => renderChatHistory(),
+  onSave: (i, value) => {
+    const cur = chatMessages[i];
+    if (!cur) return;
+    cur.content = value;
     // 首条 user 消息变化时同步会话标题（未 AI 命名时）
     const s = sessions.find(x => x.id === activeSessionId);
     if (s && !s.aiTitled) s.title = titleFromMessages(chatMessages);
     saveChatHistory();
     renderChatHistory(); // 全量重渲染，统一恢复编辑/删除按钮与索引
     import('./utils.js').then(m => m.showToast('已更新消息', 'success'));
-  });
-  cancelBtn.addEventListener('click', () => renderChatHistory());
+  }
+});
+
+function startEditMsg(msgEl, idx) {
+  const i = idx != null ? Number(idx) : -1;
+  if (i < 0 || i >= chatMessages.length) return;
+  const cur = chatMessages[i];
+  if (!cur) return;
+  return messageEditView.start(msgEl, i, cur.content);
 }
 
 function deleteMsg(idx, msgEl) {
