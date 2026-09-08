@@ -20,6 +20,7 @@ import { countMessagesTokens, trimToBudget } from './ai/conversation/budget.js';
 import { runConversationTurn } from './ai/conversation/engine.js';
 import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMemoryLimits, normalizeMemory, normalizeSessionList, pruneSessions, recentMemoryTurns, selectActiveSession, titleFromMessages, updateSessionFromChat, visibleMessagesFromSession } from './ai/session/model.js';
 import { createAiDataRepository } from './ai/session/repository.js';
+import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup, buildMemoryInjection as buildMemoryInjectionFromState, createTurnMemoryRecord, planRollup } from './ai/memory/policy.js';
 import { formatChatText } from './ai/ui/markdown.js';
 import { applyEntryFilter as filterEntries, searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers, bookInfo as buildBookInfo } from './ai/tools/worldbook-read.js';
 
@@ -50,7 +51,6 @@ const smartDraftState = createSmartDraftState();
 let memory = emptyMemory();
 let logBookId = null;     // 当前已加载记忆的 bookId
 let isRollingUp = false;  // 大总结进行中锁
-const ROLLUP_EVERY = 10;  // 每满 N 条小总结整合一次
 
 function memKey(bookId) { return 'wbe-memory:' + (bookId || 'unsaved'); }
 
@@ -346,6 +346,14 @@ function summarizeTools(trace) {
 function pushTurnMemory({ user, trace, reply }) {
   const toolSummary = summarizeTools(trace);
   const actionSummary = summarizeToolTraceForMemory(trace);
+  const record = createTurnMemoryRecord({ user, trace, reply, actionSummary, toolSummary });
+  if (!record) return;
+  memory.turns.push(record);
+  saveMemory();
+  updateMemoryBadge();
+}) {
+  const toolSummary = summarizeTools(trace);
+  const actionSummary = summarizeToolTraceForMemory(trace);
   const cleanReply = (reply || '').trim();
   if (!actionSummary && (!cleanReply || cleanReply === '(无回复)')) return;
   memory.turns.push({
@@ -480,38 +488,15 @@ async function maybeGenerateTitle() {
 
 async function maybeRollup() {
   if (isRollingUp) return;
-  if (memory.turns.length - memory.rolledUpCount < ROLLUP_EVERY) return;
+  const plan = planRollup(memory, ROLLUP_EVERY);
+  if (!plan) return;
   isRollingUp = true;
   updateMemoryBadge();
   if ($('memoryModal') && $('memoryModal').classList.contains('open')) renderMemoryList();
 
-  const from = memory.rolledUpCount;
-  const to = from + ROLLUP_EVERY;
-  const batch = memory.turns.slice(from, to);
-  const prevDigest = memory.rollups.map(r => r.text).join('\n');
-  const lines = batch.map((t, i) => {
-    const parts = [];
-    if (t.user) parts.push('用户：' + t.user);
-    if (t.actionSummary) parts.push('操作：' + t.actionSummary);
-    else if (t.toolSummary) parts.push('操作：完成了相关查询或修改');
-    if (t.reply) parts.push('结果：' + t.reply);
-    return (i + 1) + '. ' + parts.join('；');
-  }).join('\n');
-  const sys = '你是记忆整合器。把用户与世界书编辑助手的若干回合操作记录浓缩成一段简洁的中文阶段总结，' +
-    '保留关键的新增/修改/删除的条目名与结论，去掉重复与搜索噪声，不要逐条复述，控制在 150 字内。';
-  const usr = (prevDigest ? '已有阶段总结（供衔接，不要重复其内容）：\n' + prevDigest + '\n\n' : '') +
-    '需要整合的 ' + ROLLUP_EVERY + ' 个回合：\n' + lines;
-
   try {
-    const text = await fetchCompletion([
-      { role: 'system', content: sys },
-      { role: 'user', content: usr }
-    ]);
-    if (text) {
-      memory.rollups.push({ from, to, text });
-      memory.rolledUpCount = to;
-      saveMemory();
-    }
+    const text = await fetchCompletion(plan.messages);
+    if (applyRollup(memory, plan, text)) saveMemory();
   } catch (e) {
     console.warn('[WBE] 记忆整合失败，下回合重试:', e.message);
   } finally {
@@ -522,37 +507,9 @@ async function maybeRollup() {
 }
 
 // 注入 system：所有大总结全文 + 最近未压缩的小总结（总长上限 8000 字符，防止上下文膨胀）
-const MEMORY_INJECTION_MAX = 8000;
-const MEMORY_INJECTION_TIGHT = 2500; // 超预算时压缩记忆注入的上限
 
 function buildMemoryInjection(maxChars = MEMORY_INJECTION_MAX) {
-  const parts = [];
-  if (memory.rollups.length) {
-    parts.push('【长期记忆 · 阶段总结】\n' + memory.rollups.map(r => '· ' + r.text).join('\n'));
-  }
-  const recent = recentTurns();
-  if (recent.length) {
-    const lines = recent.map((t, i) => {
-      const seg = [];
-      if (t.actionSummary) seg.push(t.actionSummary);
-      else if (t.toolSummary) seg.push('完成了相关查询或修改');
-      if (t.reply) seg.push(t.reply);
-      return (i + 1) + '. ' + seg.join(' → ');
-    });
-    // 按预算截断：优先保留最新的近期操作
-    let used = 0;
-    const kept = [];
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (used + lines[i].length > 6500) break;
-      kept.unshift(lines[i]);
-      used += lines[i].length;
-    }
-    if (kept.length < lines.length) kept.push('…(更早的操作已省略)');
-    parts.push('【近期操作（细节，避免重复查询已知信息）】\n' + kept.join('\n'));
-  }
-  const joined = parts.join('\n\n');
-  if (!joined) return '';
-  return '\n\n' + (joined.length <= maxChars ? joined : joined.slice(0, maxChars) + '\n…(记忆注入已截断)');
+  return buildMemoryInjectionFromState(memory, maxChars);
 }
 
 // 确保当前 memory 与 currentBookId 对应（换书/刷新后用）。currentBookId 是 live binding。
