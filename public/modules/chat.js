@@ -351,23 +351,7 @@ function pushTurnMemory({ user, trace, reply }) {
   memory.turns.push(record);
   saveMemory();
   updateMemoryBadge();
-}) {
-  const toolSummary = summarizeTools(trace);
-  const actionSummary = summarizeToolTraceForMemory(trace);
-  const cleanReply = (reply || '').trim();
-  if (!actionSummary && (!cleanReply || cleanReply === '(无回复)')) return;
-  memory.turns.push({
-    user: (user || '').slice(0, 200),
-    actionSummary,
-    toolSummary,
-    toolDetail: (trace || []).slice(-20),
-    reply: cleanReply.slice(0, 400),
-    ts: Date.now()
-  });
-  saveMemory();
-  updateMemoryBadge();
 }
-
 // ===== 记忆角标 + 弹窗 =====
 function updateMemoryBadge() {
   const b = $('memBadge');
