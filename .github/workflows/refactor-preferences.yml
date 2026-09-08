@@ -1,0 +1,42 @@
+name: One-shot preferences migration
+
+on:
+  push:
+    branches:
+      - refactor/lore-atlas-v2
+    paths:
+      - scripts/migrate-preferences.mjs
+      - .github/workflows/refactor-preferences.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/lore-atlas-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/migrate-preferences.mjs
+      - name: Parse and architecture checks
+        run: |
+          node --check public/app.js
+          node --check public/modules/app/preferences.js
+          node --test tests/preferences.test.mjs tests/preferences-boundary.test.mjs
+      - name: Run npm test
+        run: npm test
+      - name: Commit migration and remove one-shot scaffolding
+        run: |
+          git config user.name "linhony123654"
+          git config user.email "105883346+linhony123654@users.noreply.github.com"
+          git add public/app.js tests/preferences-boundary.test.mjs
+          git rm scripts/migrate-preferences.mjs .github/workflows/refactor-preferences.yml
+          git commit -m "refactor(app): delegate preferences controller"
+          git push origin HEAD:refactor/lore-atlas-v2
