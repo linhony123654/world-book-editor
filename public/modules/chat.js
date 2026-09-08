@@ -29,6 +29,7 @@ import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup
 import { createAssistantStreamView } from './ai/ui/assistant-stream-view.js';
 import { createChatRenderer } from './ai/ui/chat-renderer.js';
 import { createChatComposer } from './ai/ui/chat-composer.js';
+import { createMessageActionsView } from './ai/ui/message-actions-view.js';
 import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
 
 // ===== 聊天状态 =====
@@ -682,57 +683,18 @@ function copyMsgText(i) {
   } else fallback();
 }
 
+const messageActionsView = createMessageActionsView({
+  documentRef: document,
+  getMessages: () => chatMessages,
+  getTokenBudget: () => TOKEN_BUDGET,
+  onResend: () => resendLast(),
+  onCopy: i => copyMsgText(i),
+  onEdit: (i, msgEl) => startEditMsg(msgEl, i),
+  onDelete: (i, msgEl) => deleteMsg(i, msgEl)
+});
+
 function attachMsgRow(msgEl, idx) {
-  const host = msgEl && msgEl.classList.contains('chat-msg-text') ? msgEl.parentElement : msgEl;
-  if (!host || host.querySelector('.chat-msg-actions')) return;
-  const i = idx != null ? Number(idx) : chatMessages.length - 1;
-  const m = chatMessages[i];
-  if (!m || (m.role !== 'user' && m.role !== 'assistant')) return;
-  const row = document.createElement('div');
-  row.className = 'chat-msg-actions';
-  if (m.role === 'assistant') {
-    const resend = document.createElement('button');
-    resend.type = 'button';
-    resend.className = 'chat-msg-act';
-    resend.title = '重新生成';
-    resend.setAttribute('aria-label', '重新生成');
-    resend.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a9 9 0 0 1 15-6.7L21 8"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a9 9 0 0 1-15 6.7L3 16"/></svg><span>重新生成</span>';
-    resend.addEventListener('click', resendLast);
-    row.appendChild(resend);
-  }
-  const copy = document.createElement('button');
-  copy.type = 'button';
-  copy.className = 'chat-msg-act';
-  copy.title = '复制这条消息';
-  copy.setAttribute('aria-label', '复制这条消息');
-  copy.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>复制</span>';
-  copy.addEventListener('click', () => copyMsgText(i));
-  row.appendChild(copy);
-  const edit = document.createElement('button');
-  edit.type = 'button';
-  edit.className = 'chat-msg-act';
-  edit.title = '编辑这条消息';
-  edit.setAttribute('aria-label', '编辑这条消息');
-  edit.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>编辑</span>';
-  edit.addEventListener('click', () => startEditMsg(msgEl, i));
-  row.appendChild(edit);
-  const del = document.createElement('button');
-  del.type = 'button';
-  del.className = 'chat-msg-act';
-  del.title = '删除这条消息';
-  del.setAttribute('aria-label', '删除这条消息');
-  del.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg><span>删除</span>';
-  del.addEventListener('click', () => deleteMsg(i, msgEl));
-  row.appendChild(del);
-  // token 标签：assistant 消息带该轮上下文估算（彩色胶囊，持久化在消息对象上）
-  if (m.role === 'assistant' && m.tokens) {
-    const pill = document.createElement('span');
-    pill.className = 'chat-token-pill' + (m.tokens > TOKEN_BUDGET ? ' over' : '');
-    pill.textContent = '≈ ' + m.tokens.toLocaleString() + ' tok';
-    pill.title = '该轮发送给模型的上下文估算';
-    row.appendChild(pill);
-  }
-  host.appendChild(row);
+  return messageActionsView.attach(msgEl, idx);
 }
 
 // 从工具参数里取草稿标题（预览中断时用）
