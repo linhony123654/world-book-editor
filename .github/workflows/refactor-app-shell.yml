@@ -1,0 +1,46 @@
+name: One-shot app shell migration
+
+on:
+  push:
+    branches:
+      - refactor/lore-atlas-v2
+    paths:
+      - .github/workflows/refactor-app-shell.yml
+      - scripts/migrate-app-shell.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/lore-atlas-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Prepare migration
+        run: node scripts/migrate-app-shell.mjs
+      - name: Parse and focused architecture checks
+        run: |
+          node --check public/app.js
+          node --check public/modules/app/undo-history.js
+          node --check public/modules/app/entry-actions.js
+          node --check public/modules/app/navigation.js
+          node --test tests/undo-history.test.mjs tests/entry-actions.test.mjs tests/navigation.test.mjs tests/app-shell-boundary.test.mjs
+      - name: Full test suite
+        run: npm test
+      - name: Commit migration and remove one-shot scaffolding
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f scripts/migrate-app-shell.mjs .github/workflows/refactor-app-shell.yml
+          git add -A
+          git commit -m "refactor(app): delegate shell responsibilities"
+          git push origin HEAD:refactor/lore-atlas-v2
