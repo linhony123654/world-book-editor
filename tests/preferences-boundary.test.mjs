@@ -9,8 +9,12 @@ test('app delegates preferences lifecycle and rendering to controller', () => {
   assert.match(app, /createPreferencesController\(\{/);
   assert.match(app, /preferences\.bind\(\)/);
   assert.match(app, /preferences\.refreshSettings\(\)/);
-  assert.match(app, /setSettingsTab: tab => preferences\.setSettingsTab\(tab\)/);
   assert.match(navigation, /setSettingsTab\('pref'\)/);
+  assert.ok(
+    /preferences\.setSettingsTab\('pref'\)/.test(app) ||
+    /setSettingsTab: tab => preferences\.setSettingsTab\(tab\)/.test(app),
+    'settings-tab ownership must be either the guarded pre-migration call or navigation callback wiring'
+  );
   assert.doesNotMatch(app, /function setSettab/);
   assert.doesNotMatch(app, /function bindSettabs/);
   assert.doesNotMatch(app, /async function refreshSettings/);
