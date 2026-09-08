@@ -7,6 +7,8 @@ const { createDatabase } = require('./server/database');
 const { createAuthService, createLoginRateLimiter, registerAuthRoutes } = require('./server/auth');
 const { createBooksService } = require('./server/books-service');
 const { registerBookRoutes, registerVersionRoutes } = require('./server/books-routes');
+const { createAiDataService } = require('./server/ai-data-service');
+const { registerAiDataRoutes } = require('./server/ai-data-routes');
 
 const app = express();
 const PORT = process.env.PORT || 8084;
@@ -136,37 +138,9 @@ app.post('/api/proxy/search', authRequired, async (req, res) => {
 // 数据 API 全部需要登录
 app.use(['/api/books', '/api/proxy', '/api/test-tool', '/api/ai-data', '/api/cloud'], authRequired);
 
-// ===== AI 会话与记忆持久化（按世界书，替代 localStorage） =====
-app.get('/api/ai-data/:bookId', (req, res) => {
-  if (!/^\d+$/.test(req.params.bookId)) return res.json({ memory: null, sessions: null, activeSession: null });
-  const row = db.prepare('SELECT memory, sessions, active_session FROM ai_data WHERE book_id = ?').get(Number(req.params.bookId));
-  if (!row) return res.json({ memory: null, sessions: null, activeSession: null });
-  const parse = s => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
-  res.json({ memory: parse(row.memory), sessions: parse(row.sessions), activeSession: row.active_session || null });
-});
-
-app.put('/api/ai-data/:bookId', (req, res) => {
-  if (!/^\d+$/.test(req.params.bookId)) return res.status(400).json({ error: 'invalid bookId' });
-  const bookId = Number(req.params.bookId);
-  const body = req.body || {};
-  const kv = [];
-  const vals = [];
-  if (Object.prototype.hasOwnProperty.call(body, 'memory')) {
-    kv.push('memory'); vals.push(body.memory == null ? null : JSON.stringify(body.memory));
-  }
-  if (Object.prototype.hasOwnProperty.call(body, 'sessions')) {
-    kv.push('sessions'); vals.push(body.sessions == null ? null : JSON.stringify(body.sessions));
-  }
-  if (Object.prototype.hasOwnProperty.call(body, 'activeSession')) {
-    kv.push('active_session'); vals.push(body.activeSession == null ? null : String(body.activeSession));
-  }
-  if (!kv.length) return res.status(400).json({ error: 'no fields' });
-  kv.push('updated_at');
-  const ph = kv.map(k => k === 'updated_at' ? "datetime('now')" : '?');
-  const upd = kv.map(k => k === 'updated_at' ? 'updated_at = excluded.updated_at' : k + ' = excluded.' + k).join(', ');
-  db.prepare(`INSERT INTO ai_data (book_id, ${kv.join(', ')}) VALUES (?, ${ph.join(', ')}) ON CONFLICT(book_id) DO UPDATE SET ${upd}`).run(bookId, ...vals);
-  res.json({ ok: true });
-});
+// ===== AI Data =====
+const aiDataService = createAiDataService({ db });
+registerAiDataRoutes(app, { aiDataService });
 
 // ===== 外置存储同步（WebDAV / S3 兼容端点，数据级 JSON bundle） =====
 // bundle 格式：{"format":"wbe-cloud-bundle","version":1,"exportedAt":ISO,"books":[...],"aiData":[...]}
