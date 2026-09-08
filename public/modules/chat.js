@@ -16,6 +16,7 @@ import { streamFetch, streamSSE } from './ai/transport.js';
 import { createSafeToolExecutor, createToolExecutor } from './ai/tools/executor.js';
 import { WORLD_BOOK_MUTATION_TOOL_NAMES, createWorldBookMutationHandlers } from './ai/tools/worldbook-mutation.js';
 import { createWebSearchTool } from './ai/tools/web-search.js';
+import { createBookToolHandlers } from './ai/tools/book-tools.js';
 import { createAuxiliaryCompletionClient } from './ai/auxiliary-client.js';
 import { runWorldBookCommand } from './domain/command-runtime.js';
 import { CommandType } from './domain/worldbook-commands.js';
@@ -26,7 +27,7 @@ import { addSessionTokens, createSession as makeSession, emptyMemory, enforceMem
 import { createAiDataRepository } from './ai/session/repository.js';
 import { MEMORY_INJECTION_MAX, MEMORY_INJECTION_TIGHT, ROLLUP_EVERY, applyRollup, buildMemoryInjection as buildMemoryInjectionFromState, createTurnMemoryRecord, planRollup } from './ai/memory/policy.js';
 import { formatChatText } from './ai/ui/markdown.js';
-import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers, bookInfo as buildBookInfo } from './ai/tools/worldbook-read.js';
+import { searchEntries, getEntry, listEntries, findDuplicates, checkEntries, testTriggers } from './ai/tools/worldbook-read.js';
 
 // ===== 聊天状态 =====
 const chatMessages = [];
@@ -1382,6 +1383,31 @@ const webSearchTool = createWebSearchTool({
   }
 });
 
+const bookToolHandlers = createBookToolHandlers({
+  getEntries: getAllEntries,
+  getCurrentBookId: () => currentBookId,
+  getCurrentBookName: currentBookName,
+  getCurrentBookData: () => worldBook,
+  getOpenEntryCount: () => entries.length,
+  listBooks: loadBookList,
+  openBook: id => loadBook(id, renderSidebar, selectEntry, renderEditorEmpty),
+  createBook,
+  renameBook,
+  deleteBook,
+  fetchBook: async id => {
+    const book = await apiRequest('GET', '/api/books/' + id);
+    return book.data;
+  },
+  beforeSwitch: abortActiveChat,
+  setCurrentBookName: name => {
+    const el = $('file-name');
+    if (el) el.textContent = name;
+  },
+  cleanupDeletedBook: cleanupDeletedBookLocalData,
+  onCleanupError: (error, bookId) => console.warn('[WBE] 清理已删世界书的本地数据失败:', bookId, error),
+  onDeletedCurrentBook: handleDeletedCurrentBook
+});
+
 dispatchTool = createToolExecutor({
   handlers: {
     search_entries: toolSearch,
@@ -1399,12 +1425,7 @@ dispatchTool = createToolExecutor({
     cleanup_book: () => toolCleanupBook(),
     find_duplicates: toolFindDuplicates,
     undo_last: toolUndo,
-    get_book_info: () => toolBookInfo(),
-    list_books: () => toolListBooks(),
-    switch_book: toolSwitchBook,
-    create_book: toolCreateBook,
-    rename_book: toolRenameBook,
-    delete_book: toolDeleteBook
+    ...bookToolHandlers
   }
 });
 
@@ -1657,111 +1678,38 @@ function currentBookName() {
   return (el && el.textContent) || '未命名';
 }
 
-function toolBookInfo() {
-  return buildBookInfo(getAllEntries(), { name: currentBookName(), bookId: currentBookId });
+function cleanupDeletedBookLocalData(bookId) {
+  localStorage.removeItem(memKey(bookId));
+  localStorage.removeItem(sessionsKey(bookId));
+  localStorage.removeItem(activeKey(bookId));
+  localStorage.removeItem('wbe-chat:' + bookId);
 }
 
-async function toolListBooks() {
-  const books = await loadBookList();
-  if (!books.length) return { summary: '暂无世界书', detail: '数据库里没有世界书' };
-  const detail = books.map(b => {
-    const cur = b.id === currentBookId ? '  ← 当前' : '';
-    return '#' + b.id + ' ' + b.name + '（' + b.entry_count + ' 条）' + cur;
-  }).join('\n');
-  return { summary: '共 ' + books.length + ' 本世界书', detail };
-}
-
-async function toolSwitchBook({ id, name }) {
-  const books = await loadBookList();
-  let target = null;
-  if (id != null) target = books.find(b => b.id === id);
-  if (!target && name) {
-    const q = String(name).toLowerCase();
-    target = books.find(b => b.name.toLowerCase() === q) || books.find(b => b.name.toLowerCase().includes(q));
-  }
-  if (!target) return { summary: '未找到目标世界书', detail: '没有匹配 id=' + id + ' / name=' + name + ' 的世界书。可先用 list_books 查看。' };
-  if (target.id === currentBookId) return { summary: '已在「' + target.name + '」', detail: '当前已是该世界书，无需切换' };
-  abortActiveChat('switch'); // 切书即中断在途流式回复
-  await loadBook(target.id, renderSidebar, selectEntry, renderEditorEmpty);
-  return { summary: '已切换到「' + target.name + '」', detail: '已打开世界书 #' + target.id + '（' + target.name + '），现有 ' + entries.length + ' 条' };
-}
-
-async function toolCreateBook({ name }) {
-  const bookName = (name && String(name).trim()) || '新世界书';
-  const res = await createBook(bookName);
+async function handleDeletedCurrentBook({ remainingBooks }) {
   abortActiveChat('switch');
-  await loadBook(res.id, renderSidebar, selectEntry, renderEditorEmpty);
-  return { summary: '已创建并打开「' + bookName + '」', detail: '新世界书 #' + res.id + '（' + bookName + '）已创建并切换过去' };
-}
-
-async function toolRenameBook({ name, id }) {
-  const newName = name && String(name).trim();
-  if (!newName) return { summary: '缺少新名称', detail: '请提供 name 参数' };
-  const targetId = (id != null) ? id : currentBookId;
-  if (targetId == null) return { summary: '无目标世界书', detail: '当前没有打开的世界书，也未指定 id' };
-  try {
-    if (targetId === currentBookId) {
-      await renameBook(targetId, newName, worldBook);
-      const el = $('file-name');
-      if (el) el.textContent = newName;
-    } else {
-      const book = await apiRequest('GET', '/api/books/' + targetId);
-      await renameBook(targetId, newName, book.data);
-    }
-    return { summary: '已重命名为「' + newName + '」', detail: '世界书 #' + targetId + ' 已重命名为「' + newName + '」' };
-  } catch (e) {
-    return { summary: '重命名失败', detail: e.message };
-  }
-}
-
-async function toolDeleteBook({ id, name, confirm }) {
-  const books = await loadBookList();
-  let target = null;
-  if (id != null) target = books.find(b => b.id === id);
-  else if (name) {
-    const q = String(name).toLowerCase();
-    target = books.find(b => b.name.toLowerCase() === q) || books.find(b => b.name.toLowerCase().includes(q));
-  } else if (currentBookId != null) target = books.find(b => b.id === currentBookId);
-  if (!target) return { summary: '未找到目标世界书', detail: '没有匹配 id=' + id + ' / name=' + name + ' 的世界书。可先用 list_books 查看。' };
-  if (confirm !== true) {
-    return { summary: '需确认删除「' + target.name + '」', detail: '将永久删除世界书 #' + target.id + '（' + target.name + '），不可恢复。确认请再次调用 delete_book 并传 confirm:true。' };
-  }
-  const wasCurrent = target.id === currentBookId;
-  try { await deleteBook(target.id); }
-  catch (e) { return { summary: '删除失败', detail: e.message }; }
-
-  // 一并清理该书在 localStorage 的记忆/会话/活动会话键（含旧版单会话历史）
-  try {
-    localStorage.removeItem(memKey(target.id));
-    localStorage.removeItem(sessionsKey(target.id));
-    localStorage.removeItem(activeKey(target.id));
-    localStorage.removeItem('wbe-chat:' + target.id);
-  } catch (e) {
-    console.warn('[WBE] 清理已删世界书的本地数据失败:', target.id, e);
-  }
+  memory = emptyMemory();
+  logBookId = null;
+  sessions = [];
+  activeSessionId = null;
+  updateMemoryBadge();
 
   let tail = '';
-  if (wasCurrent) {
-    abortActiveChat('switch');
-    memory = emptyMemory();
-    logBookId = null;
-    sessions = [];
-    activeSessionId = null;
-    updateMemoryBadge();
-    const rest = await loadBookList();
-    if (rest.length) {
-      await loadBook(rest[0].id, renderSidebar, selectEntry, renderEditorEmpty);
-      tail = '，已切换到「' + rest[0].name + '」';
-    } else {
-      const st = await import('./state.js');
-      st.setCurrentBookId(null); st.setCurrentUid(null);
-      setEntries([]); renderSidebar(); renderEditorEmpty();
-      const el = $('file-name'); if (el) el.textContent = '未命名';
-      chatMessages.length = 0;
-      renderChatHistory();
-      tail = '，已无其它世界书';
-    }
-    ensureMemoryLoaded(); // 加载新当前书的记忆与会话（logBookId 已置空会触发重载）
+  if (remainingBooks.length) {
+    await loadBook(remainingBooks[0].id, renderSidebar, selectEntry, renderEditorEmpty);
+    tail = '，已切换到「' + remainingBooks[0].name + '」';
+  } else {
+    const state = await import('./state.js');
+    state.setCurrentBookId(null);
+    state.setCurrentUid(null);
+    setEntries([]);
+    renderSidebar();
+    renderEditorEmpty();
+    const el = $('file-name');
+    if (el) el.textContent = '未命名';
+    chatMessages.length = 0;
+    renderChatHistory();
+    tail = '，已无其它世界书';
   }
-  return { summary: '已删除「' + target.name + '」', detail: '世界书 #' + target.id + '（' + target.name + '）已永久删除' + tail };
+  ensureMemoryLoaded();
+  return tail;
 }
