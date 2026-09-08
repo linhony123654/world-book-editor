@@ -15,6 +15,8 @@ import { createApiProfileRepository } from './modules/app/api-profiles.js';
 import { decodeLegacyConfigKey, decryptConfigKey, encryptConfigKey, isEncryptedConfigKey } from './modules/app/config-key-crypto.js';
 import { apiStatusText, createApiSettingsController } from './modules/app/api-settings.js';
 import { createPreferencesController } from './modules/app/preferences.js';
+import { createDataToolsController } from './modules/app/data-tools.js';
+import { copyText } from './modules/ai/ui/clipboard.js';
 
 const SCREENS = ['library', 'editor', 'chat', 'archives', 'settings', 'me'];
 
@@ -115,6 +117,31 @@ const apiSettings = createApiSettingsController({
   refreshSettings: () => preferences.refreshSettings()
 });
 
+const dataTools = createDataToolsController({
+  $,
+  importFile,
+  exportFile,
+  exportMarkdown,
+  loadBookList,
+  loadBook,
+  getCurrentBookId: () => currentBookId,
+  renderSidebar,
+  selectEntry: onSelectEntry,
+  renderEditorEmpty,
+  ensureMemoryLoaded,
+  profileRepo,
+  refreshSettings: () => preferences.refreshSettings(),
+  encryptConfigKey,
+  decryptConfigKey,
+  decodeLegacyConfigKey,
+  isEncryptedConfigKey,
+  copyText,
+  navigatorRef: navigator,
+  documentRef: document,
+  promptFn: (...args) => prompt(...args),
+  showToast
+});
+
 // ===== 初始化 =====
 async function init() {
   bindAuth();
@@ -131,7 +158,7 @@ async function init() {
 async function bootApp() {
   bindNav();
   bindEntryActions();
-  bindSettings();
+  dataTools.bind();
   preferences.bind();
   apiSettings.bind();
   versionHistory.bind();
@@ -282,73 +309,6 @@ function onCreateEntry() {
   newEntry(title);
   closeModal($('entryModal'));
   setScreen('editor');
-}
-
-// ===== 设置项绑定 =====
-function bindSettings() {
-  $('importBtn') && $('importBtn').addEventListener('click', () => $('file-input').click());
-  $('file-input').addEventListener('change', e => {
-    if (e.target.files[0]) importFile(e.target.files[0], renderSidebar, onSelectEntry, renderEditorEmpty);
-    e.target.value = '';
-  });
-  $('exportBtn') && $('exportBtn').addEventListener('click', exportFile);
-  $('exportMdBtn') && $('exportMdBtn').addEventListener('click', exportMarkdown);
-
-  // ===== 配置秘钥：换浏览器/设备时一键复制与导入 =====
-  // Crypto protocol lives in modules/app/config-key-crypto.js.
-  function buildConfigKey() {
-    return JSON.stringify({ p: profileRepo.load(), a: profileRepo.activeId(), v: 1 });
-  }
-
-  $('copyConfigKeyBtn') && $('copyConfigKeyBtn').addEventListener('click', async () => {
-    const password = prompt('设置秘钥密码（导入时需要输入同一密码；建议 ≥6 位）');
-    if (password === null) return; // 取消
-    if (!password.trim()) return showToast('密码不能为空', 'error');
-    const payloadJson = buildConfigKey();
-    try {
-      const key = await encryptConfigKey(payloadJson, password);
-      try {
-        await navigator.clipboard.writeText(key);
-        showToast('已加密并复制，导入时输入同一密码即可', 'success');
-      } catch {
-        prompt('复制失败，请手动复制以下秘钥：', key);
-      }
-    } catch (e) {
-      showToast('加密失败: ' + e.message, 'error');
-    }
-  });
-  $('importConfigKeyBtn') && $('importConfigKeyBtn').addEventListener('click', async () => {
-    const raw = ($('configKeyInput') && $('configKeyInput').value || '').trim();
-    if (!raw) return showToast('请先粘贴秘钥', 'error');
-    try {
-      let payloadJson;
-      if (isEncryptedConfigKey(raw)) {
-        const password = prompt('输入秘钥密码');
-        if (password === null) return;
-        payloadJson = await decryptConfigKey(raw, password);
-      } else {
-        // 旧版明文秘钥兼容
-        payloadJson = decodeLegacyConfigKey(raw);
-      }
-      const payload = JSON.parse(payloadJson);
-      if (!payload || !Array.isArray(payload.p)) throw new Error('bad key');
-      const imported = profileRepo.replaceImported(payload.p, payload.a);
-      if (!imported.profiles.length) throw new Error('no profiles');
-      preferences.refreshSettings();
-      showToast('已导入 ' + imported.profiles.length + ' 个接口配置', 'success');
-    } catch (e) {
-      showToast('秘钥无效或密码错误', 'error');
-    }
-  });
-
-  $('reloadBtn') && $('reloadBtn').addEventListener('click', async () => {
-    const books = await loadBookList();
-    const cur = (await import('./modules/state.js')).currentBookId;
-    const target = books.find(b => b.id === cur) || books[0];
-    if (target) { await loadBook(target.id, renderSidebar, onSelectEntry, renderEditorEmpty); await ensureMemoryLoaded(); }
-    else showToast('没有可加载的世界书', 'error');
-  });
-
 }
 
 // ===== 通用弹窗关闭（焦点管理见 utils.js 的 Modal 工具） =====
